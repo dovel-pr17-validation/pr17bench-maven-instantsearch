@@ -1,0 +1,1284 @@
+/** @jsx createElement */
+
+import { cx } from '../../lib';
+import {
+  findLastProgressPart,
+  findTool,
+  getTextContent,
+  hasTextContent,
+  isReasoningPartActive,
+  isPartText,
+  isPartTool,
+  isSilentUserMessage,
+} from '../../lib/utils/chat';
+import { createButtonComponent } from '../Button';
+
+import { createChatMessageComponent } from './ChatMessage';
+import { createChatMessageErrorComponent } from './ChatMessageError';
+import { createChatMessageLoaderComponent } from './ChatMessageLoader';
+import {
+  ChevronDownIcon,
+  CheckIcon,
+  CopyIcon,
+  LoadingSpinnerIcon,
+  ReloadIcon,
+  ThumbsUpIcon,
+  ThumbsDownIcon,
+} from './icons';
+
+import type {
+  ChatMessageProps,
+  ChatMessageActionProps,
+  ChatMessageClassNames,
+  ChatMessageTranslations,
+} from './ChatMessage';
+import type { ChatMessageErrorProps } from './ChatMessageError';
+import type { ChatMessageLoaderPropsWithContext } from './ChatMessageLoader';
+import type {
+  ChatComponentContext,
+  ChatComponentPropsWithContext,
+  ChatEmptyProps,
+  ChatLayoutOwnProps,
+  ChatLoaderContext,
+  ChatLoaderPhase,
+  ChatLoaderPosition,
+  ChatMessageBase,
+  ChatStatus,
+  ClientSideTools,
+} from './types';
+import type {
+  ComponentProps,
+  Hooks,
+  MutableRef,
+  Renderer,
+  VNode,
+} from '../../types';
+
+export type ChatMessagesTranslations = {
+  /**
+   * Label for the scroll to bottom button
+   */
+  scrollToBottomLabel: string;
+  /**
+   * Accessible name of the scrollable message history, which is focusable so
+   * keyboard users can scroll it
+   */
+  conversationLabel?: string;
+  /**
+   * Announced to screen readers when a reply starts
+   */
+  respondingStatusText?: string;
+  /**
+   * Announced to screen readers once a reply is complete, instead of chunk by
+   * chunk while it streams. Receives the reply, so it can announce its text
+   * (the library can't know how a reply is rendered) or a summary of it.
+   */
+  responseCompleteStatusText?: (context: {
+    message: ChatMessageBase;
+  }) => string;
+  /**
+   * Announced to screen readers when the chat ends in an error
+   */
+  errorStatusText?: string;
+  /**
+   * Text to display in the loader. A function can label the wait by what the
+   * turn is doing (`context.phase`).
+   */
+  loaderText?: string | ((context: ChatLoaderContext) => string);
+  /**
+   * Label for the copy to clipboard action
+   */
+  copyToClipboardLabel?: string;
+  /**
+   * Label for the regenerate action
+   */
+  regenerateLabel?: string;
+  /**
+   * Label for the thumbs up action
+   */
+  thumbsUpLabel?: string;
+  /**
+   * Label for the thumbs down action
+   */
+  thumbsDownLabel?: string;
+  /**
+   * Text shown after submitting feedback
+   */
+  feedbackThankYouText?: string;
+  /**
+   * Label for the feedback spinner
+   */
+  sendingFeedbackLabel?: string;
+};
+
+export type ChatMessagesClassNames = {
+  /**
+   * Class names to apply to the root element
+   */
+  root: string | string[];
+  /**
+   * Class names to apply to the scroll container
+   */
+  scroll: string | string[];
+  /**
+   * Class names to apply to the content container
+   */
+  content: string | string[];
+  /**
+   * Class names to apply to the scroll to bottom button
+   */
+  scrollToBottom: string | string[];
+  /**
+   * Class names to apply to the scroll to bottom button when hidden
+   */
+  scrollToBottomHidden: string | string[];
+  /**
+   * Class names to apply to the visually hidden status announcement
+   */
+  status: string | string[];
+};
+
+type ChatMessageRoleProps<TMessage extends ChatMessageBase = ChatMessageBase> =
+  Partial<
+    Omit<ChatMessageProps<TMessage>, 'ref' | 'key' | 'message' | 'messages'>
+  > &
+    Partial<Pick<ChatMessageProps, 'message' | 'messages'>>;
+
+export type ChatMessagesProps<
+  TMessage extends ChatMessageBase = ChatMessageBase,
+> = ComponentProps<'div'> & {
+  /**
+   * Array of messages to display
+   */
+  messages: TMessage[];
+  /**
+   * Custom message renderer
+   */
+  messageComponent?: (
+    props: ChatComponentPropsWithContext<
+      {
+        message: TMessage;
+        /**
+         * The loader, on the row hosting it while `loaderPosition` is
+         * `'message-inline'`. Render it to keep the loader inside the message.
+         */
+        loaderElement?: VNode;
+        /**
+         * The prompt suggestions, on the row they belong to.
+         */
+        suggestionsElement?: VNode;
+      },
+      TMessage
+    >
+  ) => JSX.Element;
+  /**
+   * Custom loader component. Receives the turn context alongside the resolved
+   * `translations`.
+   */
+  loaderComponent?: (
+    props: ChatMessageLoaderPropsWithContext<TMessage>
+  ) => JSX.Element;
+  /**
+   * Where the loader renders.
+   * @default 'messages-end'
+   */
+  loaderPosition?: ChatLoaderPosition;
+  /**
+   * Overrides when the loader shows. Receives the turn context plus the
+   * built-in decision as `defaultValue`, so it can be narrowed or widened
+   * instead of reimplemented. Smoothing still applies to the result.
+   */
+  shouldShowLoader?: (
+    context: ChatLoaderContext<TMessage> & { defaultValue: boolean }
+  ) => boolean;
+  /**
+   * How long (ms) a renewed loading state must hold before the loader comes
+   * back after having been hidden in the same turn. The turn's first loader is
+   * never delayed.
+   * @default 250
+   */
+  loaderShowDelay?: number;
+  /**
+   * Minimum time (ms) the loader stays on screen once shown, while the turn is
+   * still running. Guards against a one-frame flash.
+   * @default 200
+   */
+  loaderMinDuration?: number;
+  /**
+   * Custom error component
+   */
+  errorComponent?: (
+    props: ChatComponentPropsWithContext<ChatMessageErrorProps, TMessage>
+  ) => JSX.Element;
+  /**
+   * Custom empty component shown when there are no messages
+   */
+  emptyComponent?: (
+    // The deprecated root props are still passed alongside `context`.
+    // eslint-disable-next-line typescript/no-deprecated
+    props: ChatComponentPropsWithContext<ChatEmptyProps, TMessage>
+  ) => JSX.Element;
+  /**
+   * Custom actions component
+   */
+  actionsComponent?: ChatMessageProps['actionsComponent'];
+  /**
+   * The index UI state
+   */
+  indexUiState: object;
+  /**
+   * Set the index UI state
+   */
+  setIndexUiState: (state: object) => void;
+  /**
+   * Tools available for the assistant
+   */
+  tools: ClientSideTools;
+  /**
+   * Current chat status
+   */
+  status?: ChatStatus;
+  /**
+   * Error from the last failed request, if any. When set, its `message` is
+   * available to custom error components or translation functions (for example
+   * API `message` fields on 403 responses).
+   */
+  error?: Error;
+  /**
+   * Whether to hide the scroll to bottom button
+   */
+  hideScrollToBottom?: boolean;
+  /**
+   * Callback for reload action
+   */
+  onReload: (messageId?: string) => void;
+  /**
+   * Callback to start a new conversation from the default error component.
+   * When provided (and no custom `errorComponent`/`actions` override it),
+   * the error renders a "New conversation" button that clears the messages
+   * and rotates the chat id. When omitted, the error renders with no action
+   * button (recommended default for guardrails-style errors).
+   */
+  onNewConversation?: () => void;
+  /**
+   * Function to close the chat
+   */
+  onClose: () => void;
+  /**
+   * Function to send a message to the chat
+   */
+  sendMessage?: ChatLayoutOwnProps['sendMessage'];
+  /**
+   * Function to regenerate the last assistant response
+   */
+  regenerate?: ChatLayoutOwnProps['regenerate'];
+  /**
+   * Function to stop the current streaming response
+   */
+  stop?: ChatLayoutOwnProps['stop'];
+  /**
+   * Whether the chat panel is open
+   */
+  open?: boolean;
+  /**
+   * Whether the chat panel is maximized
+   */
+  maximized?: boolean;
+  /**
+   * Function to set the prompt input value
+   */
+  setInput?: (input: string) => void;
+  /**
+   * Optional class names
+   */
+  classNames?: Partial<ChatMessagesClassNames>;
+  /**
+   * Optional message class names
+   */
+  messageClassNames?: Partial<ChatMessageClassNames>;
+  /**
+   * Optional translations
+   */
+  translations?: Partial<ChatMessagesTranslations>;
+  /**
+   * Optional message translations
+   */
+  messageTranslations?: Partial<ChatMessageTranslations>;
+  /**
+   * Optional user message props
+   */
+  userMessageProps?: ChatMessageRoleProps<TMessage>;
+  /**
+   * Optional assistant message props
+   */
+  assistantMessageProps?: ChatMessageRoleProps<TMessage>;
+  /**
+   * Whether the scroll is at the bottom (controlled state)
+   */
+  isScrollAtBottom?: boolean;
+  /**
+   * Whether the messages are clearing (for animation)
+   */
+  isClearing?: boolean;
+  /**
+   * Callback for when clearing transition ends
+   */
+  onClearTransitionEnd?: () => void;
+  /**
+   * Ref callback for the scroll container element
+   */
+  scrollRef?: MutableRef<HTMLDivElement | null>;
+  /**
+   * Ref callback for the content element
+   */
+  contentRef?: MutableRef<HTMLDivElement | null>;
+  /**
+   * Callback to scroll to bottom
+   */
+  onScrollToBottom?: () => void;
+  /**
+   * Suggestions element to display below a message
+   */
+  suggestionsElement?: VNode;
+  /**
+   * Callback for feedback (thumbs up/down) on a message.
+   */
+  onFeedback?: (messageId: string, vote: 0 | 1) => void;
+  /**
+   * Map of message IDs to their feedback state.
+   */
+  feedbackState?: Record<string, 'sending' | 0 | 1>;
+};
+
+const copyToClipboard = (message: ChatMessageBase) => {
+  navigator.clipboard.writeText(getTextContent(message));
+};
+
+const DEFAULT_LOADER_SHOW_DELAY = 250;
+// Short enough that it never lingers over the content that replaced it.
+const DEFAULT_LOADER_MIN_DURATION = 200;
+
+function getInstantSearchStatus(tools: ClientSideTools) {
+  return Object.values(tools).find((tool) => tool.insightsEventContext)
+    ?.insightsEventContext?.instantSearchStatus;
+}
+// Own-key presence is what a JSX spread copies; `in` would also answer for
+// inherited keys the spread leaves behind.
+const hasOwnKey = (target: object | undefined, key: string) =>
+  target !== undefined && Object.prototype.hasOwnProperty.call(target, key);
+
+function createDefaultMessageComponent({ createElement, Fragment }: Renderer) {
+  const ChatMessage = createChatMessageComponent({ createElement, Fragment });
+
+  return function DefaultMessage<
+    TMessage extends ChatMessageBase = ChatMessageBase,
+  >({
+    message,
+    userMessageProps,
+    assistantMessageProps,
+    indexUiState,
+    setIndexUiState,
+    onReload,
+    onFeedback,
+    feedbackState,
+    actionsComponent,
+    classNames,
+    messageTranslations,
+    translations,
+    suggestionsElement,
+    loaderElement,
+    context,
+  }: {
+    key: string;
+    message: TMessage;
+    isCurrentMessage: boolean;
+    status: ChatStatus;
+    userMessageProps?: ChatMessageRoleProps<TMessage>;
+    assistantMessageProps?: ChatMessageRoleProps<TMessage>;
+    indexUiState: object;
+    setIndexUiState: (state: object) => void;
+    onReload: (messageId?: string) => void;
+    onFeedback?: (messageId: string, vote: 0 | 1) => void;
+    feedbackState?: Record<string, 'sending' | 0 | 1>;
+    actionsComponent?: ChatMessageProps['actionsComponent'];
+    translations: ChatMessagesTranslations;
+    classNames?: Partial<ChatMessageClassNames>;
+    messageTranslations?: Partial<ChatMessageTranslations>;
+    suggestionsElement?: VNode;
+    loaderElement?: VNode;
+    context: ChatComponentContext<TMessage>;
+  }) {
+    const defaultAssistantActions: ChatMessageActionProps[] = [
+      ...(hasTextContent(message)
+        ? [
+            {
+              title: translations.copyToClipboardLabel,
+              icon: () => <CopyIcon createElement={createElement} />,
+              onClick: copyToClipboard,
+            },
+          ]
+        : []),
+      {
+        title: translations.regenerateLabel,
+        icon: () => <ReloadIcon createElement={createElement} />,
+        onClick: (m) => onReload(m.id),
+      },
+    ];
+
+    const messageFeedback = feedbackState?.[message.id];
+    const hasVoted = messageFeedback !== undefined;
+
+    if (onFeedback) {
+      const isSending = messageFeedback === 'sending';
+      if (isSending) {
+        defaultAssistantActions.push({
+          title: translations.sendingFeedbackLabel,
+          icon: () => (
+            <span className="ais-ChatMessage-feedbackSpinner">
+              <LoadingSpinnerIcon createElement={createElement} />
+            </span>
+          ),
+          disabled: true,
+        });
+      } else if (hasVoted) {
+        defaultAssistantActions.push({
+          title: translations.feedbackThankYouText,
+          icon: () => (
+            <span className="ais-ChatMessage-feedbackCheck">
+              <CheckIcon createElement={createElement} />
+              <span className="ais-ChatMessage-feedbackText">
+                {translations.feedbackThankYouText}
+              </span>
+            </span>
+          ),
+          disabled: true,
+        });
+      } else {
+        defaultAssistantActions.push(
+          {
+            title: translations.thumbsUpLabel,
+            icon: () => <ThumbsUpIcon createElement={createElement} />,
+            onClick: (m: ChatMessageBase) => onFeedback(m.id, 1),
+          },
+          {
+            title: translations.thumbsDownLabel,
+            icon: () => <ThumbsDownIcon createElement={createElement} />,
+            onClick: (m: ChatMessageBase) => onFeedback(m.id, 0),
+          }
+        );
+      }
+    }
+
+    const messageProps =
+      message.role === 'user' ? userMessageProps : assistantMessageProps;
+    const defaultActions =
+      message.role === 'user' ? undefined : defaultAssistantActions;
+
+    return (
+      <ChatMessage
+        side={message.role === 'user' ? 'right' : 'left'}
+        variant={message.role === 'user' ? 'neutral' : 'subtle'}
+        indexUiState={indexUiState}
+        setIndexUiState={setIndexUiState}
+        actions={defaultActions}
+        actionsComponent={actionsComponent}
+        data-role={message.role}
+        classNames={classNames}
+        translations={messageTranslations}
+        suggestionsElement={suggestionsElement}
+        loaderElement={loaderElement}
+        context={context}
+        {...messageProps}
+        message={message}
+        messages={context.messages}
+      />
+    );
+  };
+}
+
+export function createChatMessagesComponent({
+  createElement,
+  Fragment,
+  useMemo,
+  useState,
+  useEffect,
+}: Renderer & Pick<Hooks, 'useMemo' | 'useState' | 'useEffect'>) {
+  const Button = createButtonComponent({ createElement });
+
+  /**
+   * Text for the screen-reader status region: once when a reply starts, once
+   * with the whole reply when it completes, and on error.
+   */
+  function useStatusAnnouncement<TMessage extends ChatMessageBase>({
+    status,
+    isProcessing,
+    messages,
+    translations,
+  }: {
+    status: ChatStatus;
+    isProcessing: boolean;
+    messages: TMessage[];
+    translations: ChatMessagesTranslations;
+  }) {
+    const [announcement, setAnnouncement] = useState('');
+    // Start from idle so a request already in flight on mount is announced.
+    // Restored history stays silent, and so does an error that predates the
+    // mount, which would otherwise replay when the chat is reopened.
+    const [previous, setPrevious] = useState<{
+      status: ChatStatus;
+      isProcessing: boolean;
+      // The last message while the request was `submitted`, before any of its
+      // reply arrived. A request that ends with it unchanged produced no reply,
+      // like a resume with no stream left to reconnect to.
+      lastMessageBeforeReply: TMessage | undefined;
+    }>({
+      status: status === 'error' ? 'error' : 'ready',
+      isProcessing: false,
+      lastMessageBeforeReply: undefined,
+    });
+
+    useEffect(() => {
+      // A reply announced as text must not outlive the history it came from.
+      if (status === 'ready' && messages.length === 0) {
+        setAnnouncement('');
+      }
+
+      if (previous.status === status) {
+        return;
+      }
+      const lastMessage = messages[messages.length - 1];
+      setPrevious({
+        status,
+        isProcessing,
+        lastMessageBeforeReply:
+          status === 'submitted'
+            ? lastMessage
+            : isProcessing
+              ? previous.lastMessageBeforeReply
+              : undefined,
+      });
+
+      if (isProcessing) {
+        if (!previous.isProcessing) {
+          setAnnouncement(translations.respondingStatusText!);
+        }
+      } else if (status === 'error') {
+        setAnnouncement(translations.errorStatusText!);
+      } else if (previous.isProcessing) {
+        // Only a trailing assistant message is a reply: a stopped request
+        // returns to `ready` with the previous turn's answer still last-but-one.
+        const reply = lastMessage;
+        if (
+          !reply ||
+          reply.role !== 'assistant' ||
+          reply === previous.lastMessageBeforeReply
+        ) {
+          setAnnouncement('');
+          return;
+        }
+        setAnnouncement(
+          translations.responseCompleteStatusText!({ message: reply })
+        );
+      }
+    }, [status, isProcessing, previous, messages, translations]);
+
+    return announcement;
+  }
+
+  /**
+   * Smooths the loading state into a visibility. Several transitions in a turn
+   * flip it twice within a few frames, which reads as the loader popping in and
+   * out, so a loader coming back mid-turn waits out `showDelay` and a visible
+   * one holds for `minDuration`.
+   */
+  function useLoaderVisibility({
+    isLoading,
+    isTurnActive,
+    showDelay,
+    minDuration,
+  }: {
+    isLoading: boolean;
+    isTurnActive: boolean;
+    showDelay: number;
+    minDuration: number;
+  }) {
+    type LoaderState =
+      | { phase: 'idle' }
+      | { phase: 'visible'; shownAt: number; elapsedDuration: number }
+      | { phase: 'hidden' }
+      | { phase: 'ready'; shownAt: number; elapsedDuration: number }
+      | { phase: 'waiting'; pendingSince: number };
+
+    const [loaderState, setLoaderState] = useState<LoaderState>({
+      phase: 'idle',
+    });
+
+    const isVisible =
+      isTurnActive &&
+      ((isLoading &&
+        (loaderState.phase === 'idle' ||
+          loaderState.phase === 'ready' ||
+          (loaderState.phase === 'hidden' && showDelay <= 0))) ||
+        (loaderState.phase === 'visible' &&
+          (isLoading || minDuration > loaderState.elapsedDuration)));
+
+    useEffect(() => {
+      if (!isTurnActive) {
+        if (loaderState.phase !== 'idle') {
+          setLoaderState({ phase: 'idle' });
+        }
+        return undefined;
+      }
+
+      if (loaderState.phase === 'idle') {
+        if (isLoading) {
+          setLoaderState({
+            phase: 'visible',
+            shownAt: Date.now(),
+            elapsedDuration: 0,
+          });
+        }
+        return undefined;
+      }
+
+      if (loaderState.phase === 'visible') {
+        if (!isLoading && minDuration <= loaderState.elapsedDuration) {
+          setLoaderState({ phase: 'hidden' });
+          return undefined;
+        }
+
+        if (minDuration <= loaderState.elapsedDuration) {
+          return undefined;
+        }
+
+        const remaining = Math.max(
+          0,
+          loaderState.shownAt + minDuration - Date.now()
+        );
+        if (remaining === 0) {
+          setLoaderState({ ...loaderState, elapsedDuration: minDuration });
+          return undefined;
+        }
+
+        const timer = setTimeout(() => {
+          setLoaderState((current) =>
+            current.phase === 'visible' &&
+            current.shownAt === loaderState.shownAt
+              ? {
+                  ...current,
+                  elapsedDuration: Math.max(
+                    current.elapsedDuration,
+                    minDuration
+                  ),
+                }
+              : current
+          );
+        }, remaining);
+
+        return () => clearTimeout(timer);
+      }
+
+      if (loaderState.phase === 'hidden') {
+        if (isLoading) {
+          const now = Date.now();
+          setLoaderState(
+            showDelay <= 0
+              ? {
+                  phase: 'visible',
+                  shownAt: now,
+                  elapsedDuration: 0,
+                }
+              : { phase: 'waiting', pendingSince: now }
+          );
+        }
+        return undefined;
+      }
+
+      if (loaderState.phase === 'ready') {
+        setLoaderState(
+          isLoading
+            ? {
+                phase: 'visible',
+                shownAt: loaderState.shownAt,
+                elapsedDuration: loaderState.elapsedDuration,
+              }
+            : { phase: 'hidden' }
+        );
+        return undefined;
+      }
+
+      if (!isLoading) {
+        setLoaderState({ phase: 'hidden' });
+        return undefined;
+      }
+
+      const remaining = Math.max(
+        0,
+        loaderState.pendingSince + showDelay - Date.now()
+      );
+      if (remaining === 0) {
+        setLoaderState({
+          phase: 'visible',
+          shownAt: Date.now(),
+          elapsedDuration: 0,
+        });
+        return undefined;
+      }
+
+      const timer = setTimeout(() => {
+        setLoaderState((current) =>
+          current.phase === 'waiting' &&
+          current.pendingSince === loaderState.pendingSince
+            ? {
+                phase: 'ready',
+                shownAt: Date.now(),
+                elapsedDuration: 0,
+              }
+            : current
+        );
+      }, remaining);
+
+      return () => clearTimeout(timer);
+    }, [isLoading, isTurnActive, loaderState, minDuration, showDelay]);
+
+    return isVisible;
+  }
+
+  const DefaultMessageComponent = createDefaultMessageComponent({
+    createElement,
+    Fragment,
+  });
+  // Skip re-rendering (and re-compiling the markdown of) completed messages on
+  // every streaming delta. The deps tuple matches the row's render inputs;
+  // callbacks/`indexUiState` are intentionally excluded because `getUiState()`
+  // returns a fresh object every render and would defeat the memo — completed
+  // rows keep the callbacks/`indexUiState` they last rendered with until their
+  // next genuine update.
+  function MemoizedDefaultMessage<
+    TMessage extends ChatMessageBase = ChatMessageBase,
+  >(props: Parameters<typeof DefaultMessageComponent<TMessage>>[0]) {
+    const messageFeedback = props.feedbackState?.[props.message.id];
+    const instantSearchStatus = getInstantSearchStatus(props.context.tools);
+    // Read the row's own side, mirroring `DefaultMessage`, so one role's change
+    // neither invalidates the other's completed rows nor goes unnoticed here.
+    const messageProps =
+      props.message.role === 'user'
+        ? props.userMessageProps
+        : props.assistantMessageProps;
+    const showReasoning = messageProps?.showReasoning !== false;
+    const parseMarkdown = messageProps?.parseMarkdown;
+    const textComponent = messageProps?.textComponent;
+    const reasoningComponent = messageProps?.reasoningComponent;
+    // A completed row is memoized against its own message, but `shouldRender`
+    // reads the whole `context`: a predicate can hide an older tool result once a
+    // newer message arrives. Track the verdicts themselves rather than
+    // `context.messages`, so the row re-renders exactly when one flips instead of
+    // on every streaming delta.
+    const shouldRenderVerdicts = getShouldRenderVerdicts(
+      props.context,
+      props.message
+    );
+    // Custom text components receive the conversation, so their completed rows
+    // must update with it. Keep the default renderer's streaming optimization.
+    const textComponentMessages = textComponent
+      ? props.context.messages
+      : undefined;
+    // A custom reasoning component receives the full context, but completed
+    // rows only need to update for its semantic state, so the memo tracks those
+    // fields rather than `props.context`. The context's callback identities and
+    // its scroll-only changes stay out. `reasoningComponent` is tracked, so
+    // replacing the component still takes effect.
+    const reasoningComponentMessages = reasoningComponent
+      ? props.context.messages
+      : undefined;
+    const reasoningComponentStatus = reasoningComponent
+      ? props.context.status
+      : undefined;
+    const reasoningComponentError = reasoningComponent
+      ? props.context.error
+      : undefined;
+    const reasoningComponentIsClearing = reasoningComponent
+      ? props.context.isClearing
+      : undefined;
+    const reasoningComponentActivePart = reasoningComponent
+      ? props.context.activePart
+      : undefined;
+    const reasoningComponentTools = reasoningComponent
+      ? props.context.tools
+      : undefined;
+    // Object-level fallback, matching the render: the spread replaces
+    // `translations` wholesale, and it copies a key holding `undefined` too. Both
+    // are why this resolves by own-key presence rather than key by key.
+    const reasoningTranslations = hasOwnKey(messageProps, 'translations')
+      ? messageProps?.translations
+      : props.messageTranslations;
+    const reasoningLabel = reasoningTranslations?.reasoningLabel;
+    const reasoningClassNames = hasOwnKey(messageProps, 'classNames')
+      ? messageProps?.classNames
+      : props.classNames;
+    const reasoningClassName = cx(reasoningClassNames?.reasoning);
+    const reasoningHeaderClassName = cx(reasoningClassNames?.reasoningHeader);
+    const reasoningIconClassName = cx(reasoningClassNames?.reasoningIcon);
+    const reasoningLabelClassName = cx(reasoningClassNames?.reasoningLabel);
+    const reasoningChevronClassName = cx(reasoningClassNames?.reasoningChevron);
+    const reasoningBodyClassName = cx(reasoningClassNames?.reasoningBody);
+    const reasoningTextClassName = cx(reasoningClassNames?.reasoningText);
+    // The row comparator. The full props object would recompile every completed
+    // message on each streaming update, and `props.context` is a fresh object
+    // every render — so track the specific context fields a completed row can
+    // render from (panel display state read by tool components) rather than the
+    // object itself, which would defeat the memo.
+    return useMemo(
+      () => <DefaultMessageComponent {...props} />,
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [
+        props.message,
+        props.isCurrentMessage,
+        props.status,
+        shouldRenderVerdicts,
+        props.context.maximized,
+        props.context.open,
+        instantSearchStatus,
+        props.suggestionsElement,
+        props.loaderElement,
+        messageFeedback,
+        showReasoning,
+        parseMarkdown,
+        textComponent,
+        textComponentMessages,
+        reasoningComponent,
+        reasoningComponentMessages,
+        reasoningComponentStatus,
+        reasoningComponentError,
+        reasoningComponentIsClearing,
+        reasoningComponentActivePart,
+        reasoningComponentTools,
+        reasoningLabel,
+        reasoningClassName,
+        reasoningHeaderClassName,
+        reasoningIconClassName,
+        reasoningLabelClassName,
+        reasoningChevronClassName,
+        reasoningBodyClassName,
+        reasoningTextClassName,
+      ]
+    );
+  }
+  const DefaultLoaderComponent = createChatMessageLoaderComponent({
+    createElement,
+  });
+  const DefaultErrorComponent = createChatMessageErrorComponent({
+    createElement,
+  });
+
+  return function ChatMessages<
+    TMessage extends ChatMessageBase = ChatMessageBase,
+  >(userProps: ChatMessagesProps<TMessage>) {
+    const {
+      classNames = {},
+      messageClassNames = {},
+      messageTranslations,
+      messages = [],
+      messageComponent: MessageComponent,
+      loaderComponent: LoaderComponent,
+      loaderPosition = 'messages-end',
+      shouldShowLoader,
+      loaderShowDelay = DEFAULT_LOADER_SHOW_DELAY,
+      loaderMinDuration = DEFAULT_LOADER_MIN_DURATION,
+      errorComponent: ErrorComponent,
+      emptyComponent: EmptyComponent,
+      actionsComponent: ActionsComponent,
+      tools,
+      indexUiState,
+      setIndexUiState,
+      status = 'ready',
+      error,
+      hideScrollToBottom = false,
+      onReload,
+      onNewConversation,
+      onClose,
+      sendMessage,
+      regenerate = () => Promise.resolve(),
+      stop = () => Promise.resolve(),
+      open = false,
+      maximized = false,
+      setInput,
+      translations: userTranslations,
+      userMessageProps,
+      assistantMessageProps,
+      isClearing = false,
+      onClearTransitionEnd,
+      isScrollAtBottom,
+      scrollRef,
+      contentRef,
+      onScrollToBottom,
+      suggestionsElement,
+      onFeedback,
+      feedbackState,
+      ...props
+    } = userProps;
+
+    const translations: ChatMessagesTranslations = {
+      scrollToBottomLabel: 'Scroll to bottom',
+      conversationLabel: 'Conversation',
+      respondingStatusText: 'Responding…',
+      responseCompleteStatusText: () => 'Reply received.',
+      errorStatusText: 'Sorry, something went wrong. Please try again.',
+      copyToClipboardLabel: 'Copy to clipboard',
+      regenerateLabel: 'Regenerate',
+      thumbsUpLabel: 'Like',
+      thumbsDownLabel: 'Dislike',
+      feedbackThankYouText: 'Thanks for your feedback!',
+      sendingFeedbackLabel: 'Sending feedback...',
+      ...userTranslations,
+    };
+
+    const cssClasses: ChatMessagesClassNames = {
+      root: cx('ais-ChatMessages', classNames.root),
+      scroll: cx('ais-ChatMessages-scroll ais-Scrollbar', classNames.scroll),
+      content: cx('ais-ChatMessages-content', classNames.content),
+      scrollToBottom: cx(
+        'ais-ChatMessages-scrollToBottom',
+        classNames.scrollToBottom
+      ),
+      scrollToBottomHidden: cx(
+        'ais-ChatMessages-scrollToBottom--hidden',
+        classNames.scrollToBottomHidden
+      ),
+      status: cx('ais-ChatMessages-status', classNames.status),
+    };
+
+    const lastMessage = messages[messages.length - 1];
+    const showReasoning = assistantMessageProps?.showReasoning !== false;
+    const lastPart = lastMessage?.parts?.[lastMessage.parts.length - 1];
+    // `activePart` means "the part currently being processed". It must clear
+    // when nothing is in progress: once the response settles (`ready`/`error`),
+    // and while `submitted` still shows the user's own message (the assistant
+    // hasn't produced a part yet). Otherwise overrides render a part that isn't
+    // actually streaming.
+    const isProcessing = status === 'submitted' || status === 'streaming';
+    const statusAnnouncement = useStatusAnnouncement({
+      status,
+      isProcessing,
+      messages,
+      translations,
+    });
+    const activePart =
+      isProcessing && lastMessage?.role === 'assistant' ? lastPart : undefined;
+    // The scan slices the remaining parts per candidate, and only the loader reads
+    // it, so skip it entirely once `showReasoning` is off.
+    // The loader reports on the assistant's turn, so it only ever belongs to an
+    // assistant message. While `submitted` the last message is still the user's
+    // own, and the loader belongs to no message at all.
+    const loaderMessage =
+      lastMessage?.role === 'assistant' ? lastMessage : undefined;
+    const hasActiveReasoning = showReasoning
+      ? (lastMessage?.parts?.some((_, index, parts) =>
+          isReasoningPartActive(parts, index)
+        ) ?? false)
+      : false;
+    // The shared context handed to every overridable chat component, so custom
+    // components can read the current chat state and common callbacks from a
+    // single, consistent place.
+    const context: ChatComponentContext<TMessage> = {
+      messages,
+      status,
+      error,
+      isClearing,
+      open,
+      maximized,
+      activePart,
+      tools,
+      sendMessage,
+      regenerate,
+      stop,
+      setInput,
+      onReload,
+      onNewConversation,
+      onClose,
+    };
+
+    // The loader also reads what the turn is doing, which no other component
+    // needs, so its context extends the shared one.
+    const loaderContext: ChatLoaderContext<TMessage> = {
+      ...context,
+      phase: getLoaderPhase(status, loaderMessage, showReasoning),
+      message: loaderMessage,
+    };
+
+    const defaultShowLoader = getShowLoader(
+      context,
+      showReasoning,
+      hasActiveReasoning
+    );
+    const isLoading = shouldShowLoader
+      ? shouldShowLoader({ ...loaderContext, defaultValue: defaultShowLoader })
+      : defaultShowLoader;
+    const showLoader = useLoaderVisibility({
+      isLoading,
+      isTurnActive: isProcessing,
+      showDelay: loaderShowDelay,
+      minDuration: loaderMinDuration,
+    });
+
+    const showEmpty =
+      messages.length === 0 && !showLoader && !isClearing && status !== 'error';
+
+    const DefaultMessage = MessageComponent || MemoizedDefaultMessage;
+    const DefaultLoader = LoaderComponent || DefaultLoaderComponent;
+    const DefaultError = ErrorComponent || DefaultErrorComponent;
+
+    // An inline loader needs an assistant message to live in; before the first
+    // response part there is none, so it falls back to its own row.
+    const isLoaderInline =
+      loaderPosition === 'message-inline' && loaderMessage !== undefined;
+    const loaderText =
+      typeof translations.loaderText === 'function'
+        ? translations.loaderText(loaderContext)
+        : translations.loaderText;
+    const loaderElement = showLoader ? (
+      <DefaultLoader
+        context={loaderContext}
+        inline={isLoaderInline}
+        translations={{ loaderText }}
+      />
+    ) : undefined;
+
+    return (
+      <div
+        {...props}
+        className={cx(cssClasses.root, props.className)}
+        role="log"
+        // The log would announce every streamed chunk (and screen readers
+        // such as VoiceOver ignore `aria-busy`), so it is silenced in favor of
+        // the status region below, which announces once per reply.
+        aria-live="off"
+      >
+        <div
+          className={cx(cssClasses.status)}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {statusAnnouncement}
+        </div>
+        <div
+          className={cx(cssClasses.scroll)}
+          ref={scrollRef}
+          // On the history rather than the root, so the status region isn't
+          // inside a busy subtree, which would defer its announcements.
+          aria-busy={isProcessing ? 'true' : undefined}
+          // Focusable so keyboard users can scroll it, including when it holds
+          // no focusable content of its own.
+          tabIndex={0}
+          role="region"
+          aria-label={translations.conversationLabel}
+        >
+          <div
+            className={cx(
+              cssClasses.content,
+              isClearing && 'ais-ChatMessages-content--clearing'
+            )}
+            ref={contentRef}
+            onTransitionEnd={(e) => {
+              if (
+                e.target === e.currentTarget &&
+                e.propertyName === 'opacity' &&
+                isClearing
+              ) {
+                onClearTransitionEnd?.();
+              }
+            }}
+          >
+            {showEmpty && EmptyComponent && (
+              <EmptyComponent
+                // Deprecated root-level props, kept alongside `context` for
+                // empty/greeting components written against the previous API.
+                // Remove in the next major.
+                sendMessage={sendMessage}
+                setInput={setInput}
+                status={status}
+                onClose={onClose}
+                context={context}
+              />
+            )}
+
+            {/* A silent user message (a prompt shortcut with no display
+                text, or one still awaiting it) stays in the transcript and
+                on the wire but gets no bubble. */}
+            {messages.map((message, index) =>
+              isSilentUserMessage(message) ? null : (
+                <DefaultMessage
+                  key={message.id}
+                  message={message}
+                  isCurrentMessage={index === messages.length - 1}
+                  status={status}
+                  userMessageProps={userMessageProps}
+                  assistantMessageProps={assistantMessageProps}
+                  indexUiState={indexUiState}
+                  setIndexUiState={setIndexUiState}
+                  onReload={onReload}
+                  onFeedback={onFeedback}
+                  feedbackState={feedbackState}
+                  actionsComponent={ActionsComponent}
+                  translations={translations}
+                  classNames={messageClassNames}
+                  messageTranslations={messageTranslations}
+                  context={context}
+                  suggestionsElement={
+                    status === 'ready' &&
+                    message.role === 'assistant' &&
+                    index === messages.length - 1
+                      ? suggestionsElement
+                      : undefined
+                  }
+                  loaderElement={
+                    isLoaderInline && index === messages.length - 1
+                      ? loaderElement
+                      : undefined
+                  }
+                />
+              )
+            )}
+
+            {!isLoaderInline && loaderElement}
+
+            {status === 'error' && (
+              <DefaultError
+                onNewConversation={onNewConversation}
+                errorMessage={error?.message}
+                translations={
+                  // Guardrail violations come with a service-authored
+                  // `fallbackResponse` that's safe to display verbatim; for
+                  // every other error we keep hiding the raw `error.message`
+                  // behind the friendly default. Detection is by `error.name`
+                  // to avoid coupling this package to `instantsearch.js`.
+                  error?.name === 'GuardrailViolationError'
+                    ? {
+                        errorMessage: ({ errorMessage: rawMessage }) =>
+                          rawMessage ?? '',
+                      }
+                    : undefined
+                }
+                context={context}
+              />
+            )}
+          </div>
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          iconOnly
+          className={cx(
+            cssClasses.scrollToBottom,
+            (hideScrollToBottom || isScrollAtBottom) &&
+              cssClasses.scrollToBottomHidden
+          )}
+          onClick={onScrollToBottom}
+          aria-label={translations.scrollToBottomLabel}
+          tabIndex={isScrollAtBottom ? -1 : 0}
+        >
+          <ChevronDownIcon createElement={createElement} />
+        </Button>
+      </div>
+    );
+  };
+}
+
+const getLoaderPhase = (
+  status: ChatStatus,
+  message: ChatMessageBase | undefined,
+  showReasoning: boolean
+): ChatLoaderPhase => {
+  if (status === 'submitted') return 'submitted';
+
+  const lastPart = findLastProgressPart(message?.parts);
+  if (!lastPart) return 'thinking';
+  if (isPartTool(lastPart)) return 'tool';
+  if (showReasoning && lastPart.type === 'reasoning') return 'reasoning';
+
+  return 'thinking';
+};
+
+/**
+ * A stable signature of every `shouldRender` verdict in a message, so a memoized
+ * row can be invalidated when a verdict changes. `undefined` when no tool part
+ * in the message declares the predicate.
+ */
+const getShouldRenderVerdicts = <TMessage extends ChatMessageBase>(
+  context: ChatComponentContext<TMessage>,
+  message: TMessage
+): string | undefined => {
+  let verdicts: string | undefined;
+
+  message.parts?.forEach((part, index) => {
+    if (!isPartTool(part)) {
+      return;
+    }
+
+    const shouldRender = findTool(part.type, context.tools)?.shouldRender;
+
+    if (!shouldRender) {
+      return;
+    }
+
+    verdicts = `${verdicts ?? ''}${index}:${shouldRender({
+      ...context,
+      message: part,
+      parentMessage: message,
+    })};`;
+  });
+
+  return verdicts;
+};
+
+const getShowLoader = <TMessage extends ChatMessageBase>(
+  context: ChatComponentContext<TMessage>,
+  showReasoning: boolean,
+  hasActiveReasoning: boolean
+): boolean => {
+  const { status, messages, tools } = context;
+
+  if (status !== 'submitted' && status !== 'streaming') return false;
+  if (status === 'submitted') return true;
+
+  const lastMessage = messages[messages.length - 1];
+  // `processStream` sets `streaming` before the `start` chunk pushes the
+  // assistant. Until then the last message is still the user's, and its text
+  // must not be read as the answer or the loader hides and comes back.
+  if (lastMessage?.role !== 'assistant') return true;
+  // Parts that render nothing must not answer for the turn's progress, or the
+  // loader flips on a part that changed nothing on screen.
+  const lastPart = findLastProgressPart(lastMessage.parts);
+
+  if (!lastPart) return true;
+  // An active disclosure carries its own progress affordance, so the loader would
+  // double it. Settled reasoning still shows it: the answer has not started.
+  if (showReasoning && hasActiveReasoning) return false;
+  if (isPartText(lastPart)) return false;
+
+  if (isPartTool(lastPart)) {
+    const tool = findTool(lastPart.type, tools);
+
+    // A part the tool declines to render leaves nothing on screen, so the turn
+    // still reads as in progress — keep the loader up rather than letting a
+    // settled-but-hidden part terminate it.
+    if (
+      lastMessage &&
+      tool?.shouldRender?.({
+        ...context,
+        message: lastPart,
+        parentMessage: lastMessage,
+      }) === false
+    ) {
+      return true;
+    }
+
+    if (lastPart.state === 'input-streaming') {
+      return !tool?.streamInput;
+    }
+  }
+
+  return true;
+};

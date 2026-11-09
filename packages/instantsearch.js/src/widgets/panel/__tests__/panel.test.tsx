@@ -1,0 +1,450 @@
+/**
+ * @jest-environment @instantsearch/testutils/jest-environment-jsdom.ts
+ */
+/** @jsx h */
+import {
+  createSearchClient,
+  createMultiSearchResponse,
+  createSingleSearchResponse,
+} from '@instantsearch/mocks';
+import { wait } from '@instantsearch/testutils/wait';
+import { within } from '@testing-library/dom';
+import userEvent from '@testing-library/user-event';
+import { h } from 'preact';
+
+import instantsearch from '../../../index.es';
+import stats from '../../stats/stats';
+import panel from '../panel';
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+});
+
+describe('panel', () => {
+  describe('templates', () => {
+    test.each([true, false])(
+      'names the default collapse button when collapsed is %s',
+      async (collapsed) => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const search = instantsearch({
+          indexName: 'indexName',
+          searchClient: createMockedSearchClient(),
+        });
+        search.addWidgets([
+          panel({
+            collapsed: () => collapsed,
+            templates: { header: 'Results' },
+          })(stats)({ container }),
+        ]);
+        search.start();
+        await wait(0);
+
+        const button = within(container).getByRole('button', {
+          name: collapsed ? 'Expand panel' : 'Collapse panel',
+        });
+        expect(button).toHaveAttribute('aria-expanded', String(!collapsed));
+        userEvent.click(button);
+        await wait(0);
+        expect(button).toHaveAccessibleName(
+          collapsed ? 'Collapse panel' : 'Expand panel'
+        );
+        expect(button).toHaveAttribute('aria-expanded', String(collapsed));
+        search.dispose();
+      }
+    );
+
+    test('preserves a translated custom collapse button template', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createMockedSearchClient(),
+      });
+      search.addWidgets([
+        panel({
+          collapsed: () => true,
+          templates: {
+            header: () => 'Résultats',
+            collapseButtonText: ({ collapsed }, { html }) =>
+              html`<span>${collapsed ? 'Développer' : 'Réduire'}</span>`,
+          },
+        })(stats)({ container }),
+      ]);
+      await expect(async () => {
+        search.start();
+        await wait(0);
+      }).not.toWarnDev();
+      const button = within(container).getByRole('button', {
+        name: 'Développer',
+      });
+      expect(button).not.toHaveAttribute('aria-label');
+      userEvent.click(button);
+      await wait(0);
+      expect(button).toHaveAccessibleName('Réduire');
+      search.dispose();
+    });
+
+    test.each([
+      {
+        type: 'function',
+        collapseButtonLabel: ({ collapsed }: { collapsed: boolean }) =>
+          collapsed ? 'Développer' : 'Réduire',
+      },
+      {
+        type: 'string',
+        collapseButtonLabel:
+          '{{#collapsed}}Développer{{/collapsed}}{{^collapsed}}Réduire{{/collapsed}}',
+      },
+    ])(
+      'renders a $type collapse button label template',
+      async ({ collapseButtonLabel }) => {
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const search = instantsearch({
+          indexName: 'indexName',
+          searchClient: createMockedSearchClient(),
+        });
+        search.addWidgets([
+          panel({
+            collapsed: () => true,
+            templates: {
+              header: () => 'Résultats',
+              collapseButtonLabel,
+            },
+          })(stats)({ container }),
+        ]);
+        search.start();
+        await wait(0);
+
+        const button = within(container).getByRole('button', {
+          name: 'Développer',
+        });
+        expect(button).toHaveAttribute('aria-expanded', 'false');
+        expect(button.querySelector('svg')).toHaveAttribute(
+          'aria-hidden',
+          'true'
+        );
+        userEvent.click(button);
+        await wait(0);
+        expect(button).toHaveAccessibleName('Réduire');
+        expect(button).toHaveAttribute('aria-expanded', 'true');
+        search.dispose();
+      }
+    );
+
+    test('uses an explicit label with custom collapse button content', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createMockedSearchClient(),
+      });
+      search.addWidgets([
+        panel({
+          collapsed: () => true,
+          templates: {
+            header: () => 'Résultats',
+            collapseButtonText: ({ collapsed }) => (collapsed ? '+' : '−'),
+            collapseButtonLabel: 'Basculer le panneau "A & B"',
+          },
+        })(stats)({ container }),
+      ]);
+      search.start();
+      await wait(0);
+
+      const button = within(container).getByRole('button', {
+        name: 'Basculer le panneau "A & B"',
+      });
+      expect(button).toHaveTextContent('+');
+      userEvent.click(button);
+      await wait(0);
+      expect(button).toHaveAccessibleName('Basculer le panneau "A & B"');
+      expect(button).toHaveTextContent('−');
+      search.dispose();
+    });
+
+    test('renders default templates', async () => {
+      const container = document.createElement('div');
+      const searchClient = createMockedSearchClient();
+
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient,
+      });
+
+      search.addWidgets([
+        panel({ collapsed: () => true })(stats)({
+          container,
+          attribute: 'brand',
+        }),
+      ]);
+
+      // @MAJOR Once Hogan.js and string-based templates are removed,
+      // `search.start()` can be moved to the test body and the following
+      // assertion can go away.
+      expect(async () => {
+        search.start();
+
+        await wait(0);
+      }).not.toWarnDev();
+
+      await wait(0);
+
+      expect(container).toMatchInlineSnapshot(`
+        <div>
+          <div
+            class="ais-Panel ais-Panel--collapsible ais-Panel--collapsed"
+          >
+            <div
+              class="ais-Panel-body"
+            >
+              <div>
+                <div
+                  class="ais-Stats"
+                >
+                  <span
+                    class="ais-Stats-text"
+                  >
+                    10 results found in 0ms
+                  </span>
+                  <span
+                    aria-atomic="true"
+                    aria-live="polite"
+                    class="ais-Stats-announcement"
+                    role="status"
+                    style="position: absolute; width: 1px; height: 1px; padding: 0px; margin: -1px; overflow: hidden; clip: rect(0px, 0px, 0px, 0px); white-space: nowrap; border: 0px;"
+                  >
+                    
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+    });
+
+    test('renders with templates using `html`', async () => {
+      const container = document.createElement('div');
+      const searchClient = createMockedSearchClient();
+
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient,
+      });
+
+      search.addWidgets([
+        panel({
+          templates: {
+            header({ results }, { html }) {
+              return html`<span
+                >Header ${results && `(${results.nbHits} results)`}</span
+              >`;
+            },
+            footer({ results }, { html }) {
+              return html`<a href="#"
+                >Footer ${results && `(${results.nbHits} results)`}</a
+              >`;
+            },
+            collapseButtonText({ collapsed }, { html }) {
+              return html`<span>${collapsed ? 'More' : 'Less'}</span>`;
+            },
+          },
+          collapsed: () => true,
+        })(stats)({ container }),
+      ]);
+
+      search.start();
+
+      await wait(0);
+
+      expect(container).toMatchInlineSnapshot(`
+        <div>
+          <div
+            class="ais-Panel ais-Panel--collapsible ais-Panel--collapsed"
+          >
+            <div
+              class="ais-Panel-header"
+            >
+              <span>
+                <span>
+                  Header 
+                  (10 results)
+                </span>
+              </span>
+              <button
+                aria-expanded="false"
+                class="ais-Panel-collapseButton"
+              >
+                <span>
+                  <span>
+                    More
+                  </span>
+                </span>
+              </button>
+            </div>
+            <div
+              class="ais-Panel-body"
+            >
+              <div>
+                <div
+                  class="ais-Stats"
+                >
+                  <span
+                    class="ais-Stats-text"
+                  >
+                    10 results found in 0ms
+                  </span>
+                  <span
+                    aria-atomic="true"
+                    aria-live="polite"
+                    class="ais-Stats-announcement"
+                    role="status"
+                    style="position: absolute; width: 1px; height: 1px; padding: 0px; margin: -1px; overflow: hidden; clip: rect(0px, 0px, 0px, 0px); white-space: nowrap; border: 0px;"
+                  >
+                    
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div
+              class="ais-Panel-footer"
+            >
+              <a
+                href="#"
+              >
+                Footer 
+                (10 results)
+              </a>
+            </div>
+          </div>
+        </div>
+      `);
+    });
+
+    test('renders with templates using JSX', async () => {
+      const container = document.createElement('div');
+      const searchClient = createMockedSearchClient();
+
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient,
+      });
+
+      search.addWidgets([
+        panel({
+          templates: {
+            header({ results }) {
+              return (
+                <span>Header {results && `(${results.nbHits} results)`}</span>
+              );
+            },
+            footer({ results }) {
+              return (
+                <a href="#">
+                  Footer {results && `(${results.nbHits} results)`}
+                </a>
+              );
+            },
+            collapseButtonText({ collapsed }) {
+              return <span>{collapsed ? 'More' : 'Less'}</span>;
+            },
+          },
+          collapsed: () => true,
+        })(stats)({ container, attribute: 'brand' }),
+      ]);
+
+      search.start();
+
+      await wait(0);
+
+      expect(container).toMatchInlineSnapshot(`
+        <div>
+          <div
+            class="ais-Panel ais-Panel--collapsible ais-Panel--collapsed"
+          >
+            <div
+              class="ais-Panel-header"
+            >
+              <span>
+                <span>
+                  Header 
+                  (10 results)
+                </span>
+              </span>
+              <button
+                aria-expanded="false"
+                class="ais-Panel-collapseButton"
+              >
+                <span>
+                  <span>
+                    More
+                  </span>
+                </span>
+              </button>
+            </div>
+            <div
+              class="ais-Panel-body"
+            >
+              <div>
+                <div
+                  class="ais-Stats"
+                >
+                  <span
+                    class="ais-Stats-text"
+                  >
+                    10 results found in 0ms
+                  </span>
+                  <span
+                    aria-atomic="true"
+                    aria-live="polite"
+                    class="ais-Stats-announcement"
+                    role="status"
+                    style="position: absolute; width: 1px; height: 1px; padding: 0px; margin: -1px; overflow: hidden; clip: rect(0px, 0px, 0px, 0px); white-space: nowrap; border: 0px;"
+                  >
+                    
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div
+              class="ais-Panel-footer"
+            >
+              <a
+                href="#"
+              >
+                Footer 
+                (10 results)
+              </a>
+            </div>
+          </div>
+        </div>
+      `);
+    });
+
+    function createMockedSearchClient() {
+      return createSearchClient({
+        search: jest.fn((requests) =>
+          Promise.resolve(
+            createMultiSearchResponse(
+              ...requests.map((request) =>
+                createSingleSearchResponse({
+                  index: request.indexName,
+                  facets: {
+                    brand: {
+                      'Insignia™': 746,
+                      Samsung: 633,
+                      Metra: 591,
+                    },
+                  },
+                  nbHits: 10,
+                })
+              )
+            )
+          )
+        ),
+      });
+    }
+  });
+});

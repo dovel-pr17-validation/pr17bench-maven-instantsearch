@@ -1,0 +1,24 @@
+{
+  "name": "example-instantsearch-query-suggestions",
+  "version": "1.85.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "start": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "oxlint .",
+    "lint:fix": "npm run lint -- --fix"
+  },
+  "dependencies": {
+    "algoliasearch": "5.1.1",
+    "algoliasearch-helper": "3.30.1",
+    "instantsearch-ui-components": "0.45.0",
+    "instantsearch.css": "8.25.1",
+    "instantsearch.js": "4.122.0"
+  },
+  "devDependencies": {
+    "vite": "5.0.7",
+    "vite-plugin-commonjs": "0.10.0"
+  }
+}

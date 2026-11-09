@@ -1,0 +1,228 @@
+import { liteClient as algoliasearch } from 'algoliasearch/lite';
+import { Hit as AlgoliaHit } from 'instantsearch.js';
+import React from 'react';
+import {
+  InstantSearch,
+  Breadcrumb,
+  Configure,
+  ClearRefinements,
+  CurrentRefinements,
+  DynamicWidgets,
+  HierarchicalMenu,
+  Highlight,
+  Hits,
+  HitsPerPage,
+  InfiniteHits,
+  Menu,
+  Pagination,
+  RangeInput,
+  RefinementList,
+  PoweredBy,
+  SearchBox,
+  SortBy,
+  ToggleRefinement,
+  Chat,
+  ChatTrigger,
+  CompareBar,
+  useInstantSearch,
+} from 'react-instantsearch';
+
+import {
+  Panel,
+  QueryRuleContext,
+  QueryRuleCustomData,
+  Refresh,
+} from './components';
+import { Tab, Tabs } from './components/layout';
+
+import 'instantsearch.css/devtools/inject';
+import 'instantsearch.css/themes/satellite.css';
+
+import './App.css';
+
+const searchClient = algoliasearch(
+  'latency',
+  '6be0576ff61c053d5f9a3225e2a90f76'
+);
+
+type HitProps = {
+  hit: AlgoliaHit<{
+    name: string;
+    price: number;
+  }>;
+};
+
+function Hit({ hit }: HitProps) {
+  const { indexRenderState } = useInstantSearch();
+  const { isSelected, toggleItem, canAddItems } =
+    indexRenderState.compare ?? {};
+  const selected = isSelected?.(hit.objectID) ?? false;
+
+  return (
+    <>
+      <Highlight hit={hit} attribute="name" className="Hit-label" />
+      <span className="Hit-price">${hit.price}</span>
+      <label className="Hit-compare">
+        <input
+          type="checkbox"
+          aria-label={`Compare ${hit.name}`}
+          checked={selected}
+          disabled={!toggleItem || (!selected && !canAddItems)}
+          onChange={() => toggleItem?.(hit)}
+        />
+        Compare
+      </label>
+    </>
+  );
+}
+
+function ItemComponent({ item }: { item: AlgoliaHit }) {
+  return (
+    <article className="ais-Carousel-hit">
+      <div className="ais-Carousel-hit-image">
+        <img src={item.image} />
+      </div>
+      <h2 className="ais-Carousel-hit-title">
+        <a
+          href={`/products.html?pid=${item.objectID}`}
+          className="ais-Carousel-hit-link"
+        >
+          {item.name}
+        </a>
+      </h2>
+    </article>
+  );
+}
+
+export function App() {
+  return (
+    <InstantSearch
+      searchClient={searchClient}
+      indexName="instant_search"
+      routing={true}
+      insights={true}
+    >
+      <Configure ruleContexts={[]} />
+
+      <div className="Container">
+        <div>
+          <DynamicWidgets>
+            <Panel header="Brands">
+              <RefinementList
+                attribute="brand"
+                searchable={true}
+                searchablePlaceholder="Search brands"
+                showMore={true}
+              />
+            </Panel>
+            <Panel header="Categories">
+              <Menu attribute="categories" showMore={true} />
+            </Panel>
+            <Panel header="Hierarchy">
+              <HierarchicalMenu
+                attributes={[
+                  'hierarchicalCategories.lvl0',
+                  'hierarchicalCategories.lvl1',
+                  'hierarchicalCategories.lvl2',
+                ]}
+                showMore={true}
+              />
+            </Panel>
+            <Panel header="Price">
+              <RangeInput attribute="price" precision={1} />
+            </Panel>
+            <Panel header="Free Shipping">
+              <ToggleRefinement
+                attribute="free_shipping"
+                label="Free shipping"
+              />
+            </Panel>
+          </DynamicWidgets>
+        </div>
+        <div className="Search">
+          <Breadcrumb
+            attributes={[
+              'hierarchicalCategories.lvl0',
+              'hierarchicalCategories.lvl1',
+              'hierarchicalCategories.lvl2',
+            ]}
+          />
+
+          <SearchBox placeholder="Search" autoFocus />
+
+          <div className="Search-header">
+            <PoweredBy />
+            <HitsPerPage
+              items={[
+                { label: '20 hits per page', value: 20, default: true },
+                { label: '40 hits per page', value: 40 },
+              ]}
+            />
+            <SortBy
+              items={[
+                { label: 'Relevance', value: 'instant_search' },
+                { label: 'Price (asc)', value: 'instant_search_price_asc' },
+                { label: 'Price (desc)', value: 'instant_search_price_desc' },
+              ]}
+            />
+            <Refresh />
+          </div>
+
+          <div className="CurrentRefinements">
+            <ClearRefinements />
+            <CurrentRefinements
+              transformItems={(items) =>
+                items.map((item) => {
+                  const label = item.label.startsWith('hierarchicalCategories')
+                    ? 'Hierarchy'
+                    : item.label;
+
+                  return {
+                    ...item,
+                    attribute: label,
+                  };
+                })
+              }
+            />
+          </div>
+
+          <QueryRuleContext
+            trackedFilters={{
+              brand: () => ['Apple'],
+            }}
+          />
+
+          <QueryRuleCustomData>
+            {({ items }) => (
+              <>
+                {items.map((item) => (
+                  <a href={item.link} key={item.banner}>
+                    <img src={item.banner} alt={item.title} />
+                  </a>
+                ))}
+              </>
+            )}
+          </QueryRuleCustomData>
+
+          <Tabs>
+            <Tab title="Hits">
+              <Hits hitComponent={Hit} />
+              <Pagination className="Pagination" />
+            </Tab>
+            <Tab title="InfiniteHits">
+              <InfiniteHits showPrevious hitComponent={Hit} />
+            </Tab>
+          </Tabs>
+        </div>
+      </div>
+
+      <Chat
+        agentId="eedef238-5468-470d-bc37-f99fa741bd25"
+        feedback={true}
+        itemComponent={ItemComponent}
+      />
+      <ChatTrigger />
+      <CompareBar configurationId="algolia_comparison_7c38cb21-cf8d-4039-a9bd-730d5b751516" />
+    </InstantSearch>
+  );
+}

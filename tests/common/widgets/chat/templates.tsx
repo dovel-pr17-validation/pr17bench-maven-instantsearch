@@ -1,0 +1,854 @@
+import { createSearchClient } from '@instantsearch/mocks';
+import { Chat } from 'instantsearch.js/es/lib/chat';
+import React from 'react';
+
+import {
+  createDefaultWidgetParams,
+  createVueElement,
+  openChat,
+  vueH,
+} from './utils';
+
+import type { ChatWidgetSetup } from '.';
+import type { TestOptions } from '../../common';
+
+type VueTextComponentProps = {
+  part: { text: string };
+  message: { id: string };
+  messages?: Array<{ id: string }>;
+  status: string;
+  partIndex: number;
+};
+
+export function createTemplatesTests(
+  setup: ChatWidgetSetup,
+  { act }: Required<TestOptions>
+) {
+  describe('templates', () => {
+    describe('header', () => {
+      test('renders with custom header template', async () => {
+        const searchClient = createSearchClient();
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(),
+              templates: {
+                header: {
+                  layout: '<div class="custom-header">Custom header</div>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(),
+              headerComponent: () => (
+                <div className="custom-header">Custom header</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(),
+              headerComponent: () =>
+                vueH('div', { class: 'custom-header' }, 'Custom header'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-header')!.textContent).toBe(
+          'Custom header'
+        );
+      });
+
+      test('renders with custom sub components', async () => {
+        const searchClient = createSearchClient();
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(),
+              templates: {
+                header: {
+                  titleIcon:
+                    '<span class="custom-title-icon">Custom title icon</span>',
+                  closeIcon:
+                    '<span class="custom-close-icon">Custom close icon</span>',
+                  minimizeIcon:
+                    '<span class="custom-minimize-icon">Custom minimize icon</span>',
+                  maximizeIcon:
+                    '<span class="custom-maximize-icon">Custom maximize icon</span>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(),
+              headerTitleIconComponent: () => (
+                <span className="custom-title-icon">Custom title icon</span>
+              ),
+              headerCloseIconComponent: () => (
+                <span className="custom-close-icon">Custom close icon</span>
+              ),
+              headerMinimizeIconComponent: () => (
+                <span className="custom-minimize-icon">
+                  Custom minimize icon
+                </span>
+              ),
+              headerMaximizeIconComponent: () => (
+                <span className="custom-maximize-icon">
+                  Custom maximize icon
+                </span>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(),
+              headerTitleIconComponent: () =>
+                vueH(
+                  'span',
+                  { class: 'custom-title-icon' },
+                  'Custom title icon'
+                ),
+              headerCloseIconComponent: () =>
+                vueH(
+                  'span',
+                  { class: 'custom-close-icon' },
+                  'Custom close icon'
+                ),
+              headerMinimizeIconComponent: () =>
+                vueH(
+                  'span',
+                  { class: 'custom-minimize-icon' },
+                  'Custom minimize icon'
+                ),
+              headerMaximizeIconComponent: () =>
+                vueH(
+                  'span',
+                  { class: 'custom-maximize-icon' },
+                  'Custom maximize icon'
+                ),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-title-icon')!.textContent).toBe(
+          'Custom title icon'
+        );
+        expect(document.querySelector('.custom-close-icon')!.textContent).toBe(
+          'Custom close icon'
+        );
+        expect(
+          document.querySelector('.custom-maximize-icon')!.textContent
+        ).toBe('Custom maximize icon');
+      });
+    });
+
+    describe('prompt', () => {
+      test('renders with custom prompt template', async () => {
+        const searchClient = createSearchClient();
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(),
+              templates: {
+                prompt: {
+                  layout: '<div class="custom-prompt">Custom prompt</div>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(),
+              promptComponent: () => (
+                <div className="custom-prompt">Custom prompt</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(),
+              promptComponent: () =>
+                vueH('div', { class: 'custom-prompt' }, 'Custom prompt'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-prompt')!.textContent).toBe(
+          'Custom prompt'
+        );
+      });
+
+      test('renders with custom sub components', async () => {
+        const searchClient = createSearchClient();
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(),
+              templates: {
+                prompt: {
+                  header: '<div class="custom-header">Custom header</div>',
+                  footer: '<div class="custom-footer">Custom footer</div>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(),
+              promptHeaderComponent: () => (
+                <div className="custom-header">Custom header</div>
+              ),
+              promptFooterComponent: () => (
+                <div className="custom-footer">Custom footer</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(),
+              promptHeaderComponent: () =>
+                vueH('div', { class: 'custom-header' }, 'Custom header'),
+              promptFooterComponent: () =>
+                vueH('div', { class: 'custom-footer' }, 'Custom footer'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-header')!.textContent).toBe(
+          'Custom header'
+        );
+        expect(document.querySelector('.custom-footer')!.textContent).toBe(
+          'Custom footer'
+        );
+      });
+    });
+
+    describe('messages', () => {
+      test('renders with custom loader', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({});
+        Object.defineProperty(chat, 'status', {
+          get: () => 'submitted',
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                loader: '<div class="custom-loader">Custom loader</div>',
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              loaderComponent: () => (
+                <div className="custom-loader">Custom loader</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              loaderComponent: () =>
+                vueH('div', { class: 'custom-loader' }, 'Custom loader'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-loader')!.textContent).toBe(
+          'Custom loader'
+        );
+      });
+
+      test('renders with custom error', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({});
+        Object.defineProperty(chat, 'status', {
+          get: () => 'error',
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                messages: {
+                  error: '<div class="custom-error">Custom error</div>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              messagesErrorComponent: () => (
+                <div className="custom-error">Custom error</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              messagesErrorComponent: () =>
+                vueH('div', { class: 'custom-error' }, 'Custom error'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-error')!.textContent).toBe(
+          'Custom error'
+        );
+      });
+
+      test('renders with custom empty screen when no messages', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({ messages: [] as any[] });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                empty: '<div class="custom-empty">Custom empty</div>',
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () => (
+                <div className="custom-empty">Custom empty</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () =>
+                vueH('div', { class: 'custom-empty' }, 'Custom empty'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-empty')!.textContent).toBe(
+          'Custom empty'
+        );
+      });
+
+      test('does not render empty screen when there are messages', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({
+          messages: [
+            {
+              id: '0',
+              role: 'user',
+              parts: [{ type: 'text', text: 'hello' }],
+            },
+          ],
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                empty: '<div class="custom-empty">Custom empty</div>',
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () => (
+                <div className="custom-empty">Custom empty</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () =>
+                vueH('div', { class: 'custom-empty' }, 'Custom empty'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-empty')).toBeNull();
+      });
+
+      test('does not render empty screen when status is error', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({ messages: [] as any[] });
+        Object.defineProperty(chat, 'status', {
+          get: () => 'error',
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                empty: '<div class="custom-empty">Custom empty</div>',
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () => (
+                <div className="custom-empty">Custom empty</div>
+              ),
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              emptyComponent: () =>
+                vueH('div', { class: 'custom-empty' }, 'Custom empty'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(document.querySelector('.custom-empty')).toBeNull();
+      });
+
+      test('renders with custom assistant and user message parts', async () => {
+        const searchClient = createSearchClient();
+
+        const chat = new Chat({
+          messages: [
+            {
+              id: '0',
+              role: 'user',
+              parts: [
+                {
+                  type: 'text',
+                  text: 'hello',
+                },
+              ],
+            },
+            {
+              id: '1',
+              role: 'assistant',
+              parts: [
+                {
+                  type: 'text',
+                  text: 'hi there!',
+                },
+              ],
+            },
+          ],
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              cssClasses: {
+                message: {
+                  leading: 'MESSAGE-LEADING',
+                  footer: 'MESSAGE-FOOTER',
+                },
+              },
+              templates: {
+                assistantMessage: {
+                  leading: '<span>Assistant Leading</span>',
+                  footer: '<span>Assistant Footer</span>',
+                },
+                userMessage: {
+                  leading: '<span>User Leading</span>',
+                  footer: '<span>User Footer</span>',
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              classNames: {
+                message: {
+                  leading: 'MESSAGE-LEADING',
+                  footer: 'MESSAGE-FOOTER',
+                },
+              },
+              assistantMessageLeadingComponent: () => (
+                <div>Assistant Leading</div>
+              ),
+              assistantMessageFooterComponent: () => (
+                <div>Assistant Footer</div>
+              ),
+              userMessageLeadingComponent: () => <div>User Leading</div>,
+              userMessageFooterComponent: () => <div>User Footer</div>,
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              classNames: {
+                message: {
+                  leading: 'MESSAGE-LEADING',
+                  footer: 'MESSAGE-FOOTER',
+                },
+              },
+              assistantMessageLeadingComponent: () =>
+                vueH('div', 'Assistant Leading'),
+              assistantMessageFooterComponent: () =>
+                vueH('div', 'Assistant Footer'),
+              userMessageLeadingComponent: () => vueH('div', 'User Leading'),
+              userMessageFooterComponent: () => vueH('div', 'User Footer'),
+            },
+          },
+        });
+
+        await openChat(act);
+
+        const leadingElements = document.querySelectorAll(
+          '.ais-ChatMessage-leading'
+        );
+        const footerElements = document.querySelectorAll(
+          '.ais-ChatMessage-footer'
+        );
+        expect(leadingElements).toHaveLength(2);
+        expect(footerElements).toHaveLength(2);
+        expect(leadingElements[0].textContent).toBe('User Leading');
+        expect(leadingElements[1].textContent).toBe('Assistant Leading');
+        expect(footerElements[0].textContent).toBe('User Footer');
+        expect(footerElements[1].textContent).toBe('Assistant Footer');
+
+        expect(leadingElements[0]).toHaveClass('MESSAGE-LEADING');
+        expect(leadingElements[1]).toHaveClass('MESSAGE-LEADING');
+        expect(footerElements[0]).toHaveClass('MESSAGE-FOOTER');
+        expect(footerElements[1]).toHaveClass('MESSAGE-FOOTER');
+      });
+
+      test('renders text parts with their message context', async () => {
+        const searchClient = createSearchClient();
+        const chat = new Chat({
+          messages: [
+            {
+              id: 'user-1',
+              role: 'user',
+              parts: [
+                { type: 'text', text: 'User first' },
+                { type: 'step-start' },
+                { type: 'text', text: 'User second' },
+              ],
+            },
+            {
+              id: 'assistant-1',
+              role: 'assistant',
+              parts: [
+                { type: 'text', text: 'Assistant first' },
+                { type: 'step-start' },
+                { type: 'text', text: 'Assistant second' },
+              ],
+            },
+          ],
+        });
+        Object.defineProperty(chat, 'status', {
+          get: () => 'streaming',
+        });
+
+        await setup({
+          instantSearchOptions: {
+            indexName: 'indexName',
+            searchClient,
+          },
+          widgetParams: {
+            javascript: {
+              ...createDefaultWidgetParams(chat),
+              templates: {
+                assistantMessage: {
+                  text: (
+                    { part, message, messages, status, partIndex },
+                    { html }
+                  ) => html`<span
+                    class="custom-text-part"
+                    data-message-id="${message.id}"
+                    data-conversation="${messages
+                      ?.map(({ id }) => id)
+                      .join(',')}"
+                    data-status="${status}"
+                    data-part-index="${partIndex}"
+                    >${part.text}</span
+                  >`,
+                },
+                userMessage: {
+                  text: (
+                    { part, message, messages, status, partIndex },
+                    { html }
+                  ) => html`<span
+                    class="custom-text-part"
+                    data-message-id="${message.id}"
+                    data-conversation="${messages
+                      ?.map(({ id }) => id)
+                      .join(',')}"
+                    data-status="${status}"
+                    data-part-index="${partIndex}"
+                    >${part.text}</span
+                  >`,
+                },
+              },
+            },
+            react: {
+              ...createDefaultWidgetParams(chat),
+              messagesProps: {
+                assistantMessageProps: {
+                  textComponent: ({
+                    part,
+                    message,
+                    messages,
+                    status,
+                    partIndex,
+                  }) => (
+                    <span
+                      className="custom-text-part"
+                      data-message-id={message.id}
+                      data-conversation={messages
+                        ?.map(({ id }) => id)
+                        .join(',')}
+                      data-status={status}
+                      data-part-index={partIndex}
+                    >
+                      {part.text}
+                    </span>
+                  ),
+                },
+                userMessageProps: {
+                  textComponent: ({
+                    part,
+                    message,
+                    messages,
+                    status,
+                    partIndex,
+                  }) => (
+                    <span
+                      className="custom-text-part"
+                      data-message-id={message.id}
+                      data-conversation={messages
+                        ?.map(({ id }) => id)
+                        .join(',')}
+                      data-status={status}
+                      data-part-index={partIndex}
+                    >
+                      {part.text}
+                    </span>
+                  ),
+                },
+              },
+            },
+            vue: {
+              ...createDefaultWidgetParams(chat),
+              messagesProps: {
+                assistantMessageProps: {
+                  textComponent: ({
+                    part,
+                    message,
+                    messages,
+                    status,
+                    partIndex,
+                  }: VueTextComponentProps) =>
+                    createVueElement(
+                      'span',
+                      {
+                        class: 'custom-text-part',
+                        'data-message-id': message.id,
+                        'data-conversation': messages
+                          ?.map(({ id }) => id)
+                          .join(','),
+                        'data-status': status,
+                        'data-part-index': partIndex,
+                      },
+                      part.text
+                    ),
+                },
+                userMessageProps: {
+                  textComponent: ({
+                    part,
+                    message,
+                    messages,
+                    status,
+                    partIndex,
+                  }: VueTextComponentProps) =>
+                    createVueElement(
+                      'span',
+                      {
+                        class: 'custom-text-part',
+                        'data-message-id': message.id,
+                        'data-conversation': messages
+                          ?.map(({ id }) => id)
+                          .join(','),
+                        'data-status': status,
+                        'data-part-index': partIndex,
+                      },
+                      part.text
+                    ),
+                },
+              },
+            },
+          },
+        });
+
+        await openChat(act);
+
+        expect(
+          Array.from(document.querySelectorAll('.custom-text-part')).map(
+            (element) => ({
+              text: element.textContent,
+              messageId: element.getAttribute('data-message-id'),
+              conversation: element.getAttribute('data-conversation'),
+              status: element.getAttribute('data-status'),
+              partIndex: Number(element.getAttribute('data-part-index')),
+            })
+          )
+        ).toEqual([
+          {
+            text: 'User first',
+            messageId: 'user-1',
+            conversation: 'user-1,assistant-1',
+            status: 'streaming',
+            partIndex: 0,
+          },
+          {
+            text: 'User second',
+            messageId: 'user-1',
+            conversation: 'user-1,assistant-1',
+            status: 'streaming',
+            partIndex: 2,
+          },
+          {
+            text: 'Assistant first',
+            messageId: 'assistant-1',
+            conversation: 'user-1,assistant-1',
+            status: 'streaming',
+            partIndex: 0,
+          },
+          {
+            text: 'Assistant second',
+            messageId: 'assistant-1',
+            conversation: 'user-1,assistant-1',
+            status: 'streaming',
+            partIndex: 2,
+          },
+        ]);
+      });
+    });
+
+    test('renders with custom actions', async () => {
+      const searchClient = createSearchClient();
+      const chat = new Chat({
+        messages: [
+          {
+            id: '0',
+            role: 'user',
+            parts: [
+              {
+                type: 'text',
+                text: 'hello',
+              },
+            ],
+          },
+          {
+            id: '1',
+            role: 'assistant',
+            parts: [
+              {
+                type: 'tool-hello',
+                toolCallId: '1',
+                input: { text: 'hello' },
+                state: 'output-available',
+                output: 'hello',
+              },
+            ],
+          },
+        ],
+      });
+
+      await setup({
+        instantSearchOptions: {
+          indexName: 'indexName',
+          searchClient,
+        },
+        widgetParams: {
+          javascript: {
+            ...createDefaultWidgetParams(chat),
+            templates: {
+              actions: ({ message }, { html }) =>
+                message.role === 'assistant'
+                  ? html`<button class="custom-action">
+                      Custom assistant action
+                    </button>`
+                  : html`<button class="custom-action">
+                      Custom user action
+                    </button>`,
+            },
+          },
+          react: {
+            ...createDefaultWidgetParams(chat),
+            actionsComponent: ({ message }) => {
+              return message.role === 'assistant' ? (
+                <button className="custom-action">
+                  Custom assistant action
+                </button>
+              ) : (
+                <button className="custom-action">Custom user action</button>
+              );
+            },
+          },
+          vue: {
+            ...createDefaultWidgetParams(chat),
+            actionsComponent: ({ message }: { message: { role: string } }) =>
+              vueH(
+                'button',
+                { class: 'custom-action' },
+                message.role === 'assistant'
+                  ? 'Custom assistant action'
+                  : 'Custom user action'
+              ),
+          },
+        },
+      });
+
+      await openChat(act);
+
+      expect(document.querySelectorAll('.custom-action')[0].textContent).toBe(
+        'Custom user action'
+      );
+      expect(document.querySelectorAll('.custom-action')[1].textContent).toBe(
+        'Custom assistant action'
+      );
+    });
+  });
+}

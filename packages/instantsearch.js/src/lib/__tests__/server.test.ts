@@ -1,0 +1,592 @@
+import {
+  createCompositionClient,
+  createControlledSearchClient,
+  createSearchClient,
+  createSingleSearchResponse,
+} from '@instantsearch/mocks';
+import { SearchParameters } from 'algoliasearch-helper';
+
+import {
+  connectConfigure,
+  connectHierarchicalMenu,
+  connectSearchBox,
+} from '../../connectors';
+import instantsearch from '../../index.es';
+import { index } from '../../widgets';
+import { getInitialResults, waitForResults } from '../server';
+
+describe('waitForResults', () => {
+  test('resolves when no search or recommend request is pending', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    });
+
+    search.addWidgets([
+      {
+        $$type: 'ais.noop',
+        dependsOn: 'none',
+        init() {},
+        render() {},
+        dispose() {},
+      },
+    ]);
+    search.start();
+
+    await expect(waitForResults(search)).resolves.toEqual([]);
+  });
+
+  test('waits for the results from the search instance', async () => {
+    const { searchClient, searches } = createControlledSearchClient();
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient,
+      initialUiState: {
+        indexName: {
+          query: 'apple',
+        },
+      },
+    }).addWidgets([
+      index({ indexName: 'indexName2' }).addWidgets([
+        connectConfigure(() => {})({ searchParameters: { hitsPerPage: 2 } }),
+      ]),
+      connectSearchBox(() => {})({}),
+    ]);
+
+    search.start();
+
+    const output = waitForResults(search);
+
+    searches[0].resolver();
+
+    await expect(output).resolves.toEqual([
+      expect.objectContaining({ query: 'apple' }),
+      expect.objectContaining({ query: 'apple', hitsPerPage: 2 }),
+    ]);
+  });
+
+  test('throws on a search client error', async () => {
+    const { searchClient, searches } = createControlledSearchClient();
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient,
+    }).addWidgets([
+      index({ indexName: 'indexName2' }),
+      connectSearchBox(() => {})({}),
+    ]);
+
+    search.start();
+
+    const output = waitForResults(search);
+
+    searches[0].rejecter({ message: 'Search error' });
+
+    await expect(output).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"Search error"`
+    );
+  });
+
+  test('throws on an InstantSearch error', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    }).addWidgets([
+      index({ indexName: 'indexName2' }),
+      connectSearchBox(() => {})({}),
+    ]);
+
+    search.start();
+
+    const output = waitForResults(search);
+
+    search.on('error', () => {});
+    search.emit('error', new Error('Search error'));
+
+    await expect(output).rejects.toThrowErrorMatchingInlineSnapshot(
+      `"Search error"`
+    );
+  });
+});
+
+describe('getInitialResults', () => {
+  test('returns empty results when no requests were made', () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    });
+
+    expect(getInitialResults(search.mainIndex, [])).toEqual({});
+  });
+
+  test('excludes isolated index trees without consuming request params', () => {
+    const search = instantsearch({
+      indexName: 'root',
+      searchClient: createSearchClient(),
+    });
+    search._initialResults = Object.fromEntries(
+      ['root', 'suggestions', 'nested'].map((indexName) => [
+        indexName,
+        {
+          state: new SearchParameters({ index: indexName }),
+          results: [createSingleSearchResponse()],
+        },
+      ])
+    );
+    search.addWidgets([
+      index({ EXPERIMENTAL_isolated: true, indexId: 'isolated' }).addWidgets([
+        index({ indexName: 'suggestions' }),
+      ]),
+      index({ indexName: 'nested' }),
+    ]);
+    search.start();
+
+    const rootParams = { hitsPerPage: 3 };
+    const nestedParams = { hitsPerPage: 7 };
+    const initialResults = getInitialResults(search.mainIndex, [
+      rootParams,
+      nestedParams,
+    ]);
+
+    expect(initialResults).not.toHaveProperty('isolated');
+    expect(initialResults).not.toHaveProperty('suggestions');
+    expect(initialResults.root?.requestParams).toEqual([rootParams]);
+    expect(initialResults.nested?.requestParams).toEqual([nestedParams]);
+  });
+
+  test('errors if results are not available', () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    });
+
+    expect(() =>
+      getInitialResults(search.mainIndex)
+    ).toThrowErrorMatchingInlineSnapshot(
+      `"The root index does not have any results. Make sure you have at least one widget that provides results."`
+    );
+  });
+
+  test('returns the current results from one index', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    }).addWidgets([connectSearchBox(() => {})({})]);
+
+    search.start();
+
+    await waitForResults(search);
+
+    expect(getInitialResults(search.mainIndex)).toEqual({
+      indexName: {
+        state: {
+          disjunctiveFacets: [],
+          disjunctiveFacetsRefinements: {},
+          facets: [],
+          facetsExcludes: {},
+          facetsRefinements: {},
+          hierarchicalFacets: [],
+          hierarchicalFacetsRefinements: {},
+          index: 'indexName',
+          numericRefinements: {},
+          tagRefinements: [],
+          query: '',
+        },
+        results: [
+          {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [],
+            hitsPerPage: 20,
+            nbHits: 0,
+            nbPages: 0,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: '',
+          },
+        ],
+      },
+    });
+  });
+
+  test('returns the current results from one non-rootindex', async () => {
+    const search = instantsearch({
+      searchClient: createSearchClient(),
+    })
+      .addWidgets([connectSearchBox(() => {})({})])
+      .addWidgets([index({ indexName: 'indexName' })]);
+
+    search.start();
+
+    await waitForResults(search);
+
+    expect(getInitialResults(search.mainIndex)).toEqual({
+      indexName: {
+        state: {
+          disjunctiveFacets: [],
+          disjunctiveFacetsRefinements: {},
+          facets: [],
+          facetsExcludes: {},
+          facetsRefinements: {},
+          hierarchicalFacets: [],
+          hierarchicalFacetsRefinements: {},
+          index: 'indexName',
+          numericRefinements: {},
+          tagRefinements: [],
+        },
+        results: [
+          {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [],
+            hitsPerPage: 20,
+            nbHits: 0,
+            nbPages: 0,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: '',
+          },
+        ],
+      },
+    });
+  });
+
+  test('returns the current results from multiple indices', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+    }).addWidgets([connectSearchBox(() => {})({})]);
+
+    search.addWidgets([index({ indexName: 'indexName2' })]);
+
+    search.start();
+
+    await waitForResults(search);
+
+    expect(getInitialResults(search.mainIndex)).toEqual({
+      indexName: {
+        state: {
+          disjunctiveFacets: [],
+          disjunctiveFacetsRefinements: {},
+          facets: [],
+          facetsExcludes: {},
+          facetsRefinements: {},
+          hierarchicalFacets: [],
+          hierarchicalFacetsRefinements: {},
+          index: 'indexName',
+          numericRefinements: {},
+          tagRefinements: [],
+          query: '',
+        },
+        results: [
+          {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [],
+            hitsPerPage: 20,
+            nbHits: 0,
+            nbPages: 0,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: '',
+          },
+        ],
+      },
+      indexName2: {
+        state: {
+          disjunctiveFacets: [],
+          disjunctiveFacetsRefinements: {},
+          facets: [],
+          facetsExcludes: {},
+          facetsRefinements: {},
+          hierarchicalFacets: [],
+          hierarchicalFacetsRefinements: {},
+          index: 'indexName2',
+          numericRefinements: {},
+          tagRefinements: [],
+        },
+        results: [
+          {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [],
+            hitsPerPage: 20,
+            nbHits: 0,
+            nbPages: 0,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: '',
+          },
+        ],
+      },
+    });
+  });
+
+  test('returns the current results with request params if specified', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+      initialUiState: {
+        indexName: {
+          query: 'apple',
+        },
+        indexName2: {
+          query: 'samsung',
+        },
+      },
+    });
+
+    search.addWidgets([
+      connectSearchBox(() => {})({}),
+      index({ indexName: 'indexName2' }).addWidgets([
+        connectSearchBox(() => {})({}),
+      ]),
+      index({ indexName: 'indexName2', indexId: 'indexId' }).addWidgets([
+        connectConfigure(() => {})({ searchParameters: { hitsPerPage: 2 } }),
+      ]),
+      index({ indexName: 'indexName2', indexId: 'indexId' }).addWidgets([
+        connectConfigure(() => {})({ searchParameters: { hitsPerPage: 3 } }),
+      ]),
+    ]);
+
+    search.start();
+
+    const requestParams = await waitForResults(search);
+
+    // Request params for the same index name + index id are not deduplicated,
+    // so we should have data for 4 indices (main index + 3 index widgets)
+    expect(requestParams).toHaveLength(4);
+    expect(requestParams).toMatchInlineSnapshot(`
+      [
+        {
+          "query": "apple",
+        },
+        {
+          "query": "samsung",
+        },
+        {
+          "hitsPerPage": 2,
+          "query": "apple",
+        },
+        {
+          "hitsPerPage": 3,
+          "query": "apple",
+        },
+      ]
+    `);
+
+    // `getInitialResults()` generates a dictionary of initial results
+    // keyed by index id, so indexName2/indexId should be deduplicated...
+    expect(Object.entries(getInitialResults(search.mainIndex))).toHaveLength(3);
+
+    // ...and only the latest duplicate params are in the returned results
+    const expectedInitialResults = {
+      indexName: expect.objectContaining({
+        requestParams: expect.arrayContaining([
+          expect.objectContaining({
+            query: 'apple',
+          }),
+        ]),
+      }),
+      indexName2: expect.objectContaining({
+        requestParams: expect.arrayContaining([
+          expect.objectContaining({
+            query: 'samsung',
+          }),
+        ]),
+      }),
+      indexId: expect.objectContaining({
+        requestParams: expect.arrayContaining([
+          expect.objectContaining({
+            query: 'apple',
+            hitsPerPage: 3,
+          }),
+        ]),
+      }),
+    };
+
+    expect(getInitialResults(search.mainIndex, requestParams)).toEqual(
+      expectedInitialResults
+    );
+
+    // Multiple calls to `getInitialResults()` with the same requestParams
+    // return the same results
+    expect(getInitialResults(search.mainIndex, requestParams)).toEqual(
+      expectedInitialResults
+    );
+  });
+
+  test('returns correct requestParams with nested hierarchical facets', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+      initialUiState: {
+        indexName: {
+          hierarchicalMenu: {
+            'hierarchicalCategories.lvl0': ['Appliances', 'Fans'],
+          },
+        },
+      },
+    });
+
+    search.addWidgets([
+      connectHierarchicalMenu(() => {})({
+        attributes: [
+          'hierarchicalCategories.lvl0',
+          'hierarchicalCategories.lvl1',
+        ],
+      }),
+    ]);
+
+    search.start();
+
+    const requestParams = await waitForResults(search);
+
+    expect(requestParams).toMatchInlineSnapshot(`
+      [
+        {
+          "facetFilters": [
+            [
+              "hierarchicalCategories.lvl1:Appliances > Fans",
+            ],
+          ],
+          "facets": [
+            "hierarchicalCategories.lvl0",
+            "hierarchicalCategories.lvl1",
+          ],
+          "maxValuesPerFacet": 10,
+        },
+        {
+          "analytics": false,
+          "clickAnalytics": false,
+          "facetFilters": [
+            [
+              "hierarchicalCategories.lvl0:Appliances",
+            ],
+          ],
+          "facets": [
+            "hierarchicalCategories.lvl0",
+            "hierarchicalCategories.lvl1",
+          ],
+          "hitsPerPage": 0,
+          "maxValuesPerFacet": 10,
+          "page": 0,
+        },
+        {
+          "analytics": false,
+          "clickAnalytics": false,
+          "facets": [
+            "hierarchicalCategories.lvl0",
+          ],
+          "hitsPerPage": 0,
+          "maxValuesPerFacet": 10,
+          "page": 0,
+        },
+      ]
+    `);
+  });
+
+  test('injects clickAnalytics and userToken into the state', async () => {
+    const search = instantsearch({
+      indexName: 'indexName',
+      searchClient: createSearchClient(),
+      initialUiState: {
+        indexName: {
+          query: 'apple',
+        },
+      },
+      insights: true,
+    });
+
+    search.addWidgets([connectSearchBox(() => {})({})]);
+
+    search.start();
+
+    const requestParams = await waitForResults(search);
+
+    expect(requestParams).toEqual([
+      {
+        clickAnalytics: true,
+        query: 'apple',
+        userToken: expect.stringMatching(/^anonymous-/),
+      },
+    ]);
+
+    const initialResults = getInitialResults(search.mainIndex, requestParams);
+    const initialResult = initialResults.indexName;
+
+    expect(initialResult).toBeDefined();
+
+    if (
+      !initialResult ||
+      !initialResult.requestParams ||
+      !initialResult.state
+    ) {
+      throw new Error('Expected initial results for indexName');
+    }
+
+    const indexRequestParams = initialResult.requestParams[0];
+    expect(indexRequestParams.clickAnalytics).toBe(true);
+    expect(indexRequestParams.userToken).toMatch(/^anonymous-/);
+
+    const indexState = initialResult.state;
+    expect(indexState.clickAnalytics).toBe(true);
+    expect(indexState.userToken).toMatch(/^anonymous-/);
+
+    expect(indexRequestParams.userToken).toEqual(requestParams[0].userToken);
+    expect(indexState.userToken).toEqual(indexRequestParams.userToken);
+  });
+
+  test('includes compositionFeedsResults for multifeed composition results', async () => {
+    const compositionID = 'my-comp';
+    const searchClient = createCompositionClient({
+      search: jest.fn(() =>
+        Promise.resolve({
+          results: [
+            createSingleSearchResponse({
+              feedID: 'products',
+              hits: [{ objectID: 'p1' }],
+            } as any),
+            createSingleSearchResponse({
+              feedID: 'articles',
+              hits: [{ objectID: 'a1' }],
+            } as any),
+          ],
+        })
+      ),
+    });
+
+    const search = instantsearch({
+      compositionID,
+      searchClient,
+    }).addWidgets([connectSearchBox(() => {})({})]);
+
+    search.start();
+
+    await waitForResults(search);
+
+    const initial = getInitialResults(search.mainIndex);
+    const entry = initial[compositionID];
+
+    expect(entry?.results).toHaveLength(1);
+    expect(entry?.compositionFeedsResults).toEqual([
+      expect.objectContaining({
+        feedID: 'products',
+        hits: [expect.objectContaining({ objectID: 'p1' })],
+      }),
+      expect.objectContaining({
+        feedID: 'articles',
+        hits: [expect.objectContaining({ objectID: 'a1' })],
+      }),
+    ]);
+
+    const roundTrip = JSON.parse(JSON.stringify(initial)) as typeof initial;
+    expect(roundTrip[compositionID]?.compositionFeedsResults).toHaveLength(2);
+    expect(roundTrip[compositionID]?.results?.[0]).toMatchObject({
+      feedID: 'products',
+    });
+  });
+});

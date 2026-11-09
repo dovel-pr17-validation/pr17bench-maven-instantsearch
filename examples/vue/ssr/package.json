@@ -1,0 +1,28 @@
+{
+  "name": "example-vue-instantsearch-ssr",
+  "version": "0.133.0",
+  "private": true,
+  "scripts": {
+    "build": "NODE_OPTIONS=--openssl-legacy-provider vue-cli-service ssr:build",
+    "serve": "NODE_OPTIONS=--openssl-legacy-provider vue-cli-service ssr:serve",
+    "start": "NODE_ENV=production NODE_OPTIONS=--openssl-legacy-provider vue-cli-service ssr:serve --mode production"
+  },
+  "dependencies": {
+    "algoliasearch": "5.1.1",
+    "algoliasearch-helper": "3.30.1",
+    "instantsearch-ui-components": "0.45.0",
+    "instantsearch.css": "8.25.1",
+    "instantsearch.js": "4.122.0",
+    "qs": "6.9.7",
+    "vue": "2.7.14",
+    "vue-instantsearch": "4.32.0",
+    "vue-router": "^3.0.2",
+    "vue-server-renderer": "2.7.14"
+  },
+  "devDependencies": {
+    "@akryum/vue-cli-plugin-ssr": "^0.5.0",
+    "@vue/cli-plugin-babel": "^3.4.1",
+    "@vue/cli-service": "^3.4.1",
+    "vue-template-compiler": "2.7.14"
+  }
+}

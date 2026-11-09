@@ -1,0 +1,78 @@
+import { fakeAct, skippableDescribe } from '../../common';
+
+import { createGuardrailsTests } from './guardrails';
+import { createOptionsTests } from './options';
+import { createPersistenceTests } from './persistence';
+import { createReasoningTests } from './reasoning';
+import { createStreamingTests } from './streaming';
+import { createTemplatesTests } from './templates';
+import { createToolCancellationTests } from './tool-cancellation';
+import { createToolResultTests } from './tool-results';
+import { createToolRetryTests } from './tool-retry';
+import { createTranslationsTests } from './translations';
+
+import type { TestOptions, TestSetup } from '../../common';
+import type { ChatWidget } from 'instantsearch.js/es/widgets/chat/chat';
+import type { ChatProps } from 'react-instantsearch';
+
+type JSBaseWidgetParams = Parameters<ChatWidget>[0];
+type DistributiveOmit<TValue, TKey extends PropertyKey> = TValue extends unknown
+  ? Omit<TValue, TKey>
+  : never;
+export type JSChatWidgetParams = DistributiveOmit<
+  JSBaseWidgetParams,
+  'container'
+> & {
+  renderChat?: boolean;
+  renderRefinements?: boolean;
+};
+export type ReactChatWidgetParams = ChatProps<unknown> & {
+  renderChat?: boolean;
+  renderRefinements?: boolean;
+};
+// `AisChat` is plain JavaScript (no published prop types); its params mirror
+// the React ones, with Vue render functions (`h` from `vue`) for components.
+export type VueChatWidgetParams = Record<string, unknown> & {
+  renderChat?: boolean;
+  renderRefinements?: boolean;
+};
+
+type ChatWidgetParams = {
+  javascript: JSChatWidgetParams;
+  react: ReactChatWidgetParams;
+  vue: VueChatWidgetParams;
+};
+
+declare module '../../common' {
+  interface FlavoredWidgetParams {
+    createChatWidgetTests: ChatWidgetParams;
+  }
+}
+
+export type ChatWidgetSetup = TestSetup<{
+  widgetParams: ChatWidgetParams;
+}>;
+
+export function createChatWidgetTests(
+  setup: ChatWidgetSetup,
+  { act = fakeAct, skippedTests = {}, flavor = 'javascript' }: TestOptions = {}
+) {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    sessionStorage.clear();
+  });
+
+  skippableDescribe('Chat widget common tests', skippedTests, () => {
+    createGuardrailsTests(setup, { act, skippedTests, flavor });
+    createOptionsTests(setup, { act, skippedTests, flavor });
+    createPersistenceTests(setup, { act, skippedTests, flavor });
+    createReasoningTests(setup, { act, skippedTests, flavor });
+    createStreamingTests(setup, { act, skippedTests, flavor });
+    createTemplatesTests(setup, { act, skippedTests, flavor });
+    createToolCancellationTests(setup, { act, skippedTests, flavor });
+    createToolResultTests(setup, { act, skippedTests, flavor });
+    createToolRetryTests(setup, { act, skippedTests, flavor });
+    createTranslationsTests(setup, { act, skippedTests, flavor });
+  });
+}
+createChatWidgetTests.flavored = true;

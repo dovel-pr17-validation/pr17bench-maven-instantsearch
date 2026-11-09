@@ -1,0 +1,7 @@
+[build]
+command = """ \
+    yarn build:ci && \
+    yarn website:examples --concurrency=1 && \
+    yarn workspace algoliasearch-helper doc
+    """
+publish = "website"

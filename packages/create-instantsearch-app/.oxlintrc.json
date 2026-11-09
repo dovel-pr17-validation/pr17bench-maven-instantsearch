@@ -1,0 +1,8 @@
+{
+  "extends": ["../../.oxlintrc.json"],
+  "ignorePatterns": ["src/templates/**"],
+  "rules": {
+    "import/no-commonjs": "off",
+    "no-console": "off"
+  }
+}

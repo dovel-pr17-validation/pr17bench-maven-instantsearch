@@ -1,0 +1,120 @@
+import {
+  aroundLatLngToPosition,
+  insideBoundingBoxToBoundingBox,
+} from '../geo-search';
+
+import type { LatLng } from '../geo-search';
+
+describe('aroundLatLngToPosition', () => {
+  it.each([
+    ['10,12', { lat: 10, lng: 12 }],
+    ['10,    12', { lat: 10, lng: 12 }],
+    ['10.15,12', { lat: 10.15, lng: 12 }],
+    ['10,12.15', { lat: 10, lng: 12.15 }],
+  ])('expect to return a Position from a string: %j', (input, expectation) => {
+    expect(aroundLatLngToPosition(input)).toEqual(expectation);
+  });
+
+  it.each([['10a,12'], ['10.    12']])(
+    'expect to throw an error with: %j',
+    (input) => {
+      expect(() => aroundLatLngToPosition(input)).toThrow(
+        `Invalid value for "aroundLatLng" parameter: "${input}"`
+      );
+    }
+  );
+});
+
+describe('insideBoundingBoxToBoundingBox', () => {
+  it.each([
+    [
+      '10,12,12,14',
+      {
+        northEast: { lat: 10, lng: 12 },
+        southWest: { lat: 12, lng: 14 },
+      },
+    ],
+    [
+      '10,   12    ,12      ,    14',
+      {
+        northEast: { lat: 10, lng: 12 },
+        southWest: { lat: 12, lng: 14 },
+      },
+    ],
+    [
+      '10.15,12.15,12.15,14.15',
+      {
+        northEast: { lat: 10.15, lng: 12.15 },
+        southWest: { lat: 12.15, lng: 14.15 },
+      },
+    ],
+    [
+      '10,10,0,0',
+      {
+        northEast: { lat: 10, lng: 10 },
+        southWest: { lat: 0, lng: 0 },
+      },
+    ],
+    [
+      '51.6,0,51.3,-0.5',
+      {
+        northEast: { lat: 51.6, lng: 0 },
+        southWest: { lat: 51.3, lng: -0.5 },
+      },
+    ],
+  ])(
+    'expect to return a BoundingBox from a string: %j',
+    (input, expectation) => {
+      expect(insideBoundingBoxToBoundingBox(input)).toEqual(expectation);
+    }
+  );
+
+  it.each([
+    [
+      [[10, 12, 12, 14]] as LatLng,
+      {
+        northEast: { lat: 10, lng: 12 },
+        southWest: { lat: 12, lng: 14 },
+      },
+    ],
+    [
+      [[10.15, 12.15, 12.15, 14.15]] as LatLng,
+      {
+        northEast: { lat: 10.15, lng: 12.15 },
+        southWest: { lat: 12.15, lng: 14.15 },
+      },
+    ],
+    [
+      [[10, 10, 0, 0]] as LatLng,
+      {
+        northEast: { lat: 10, lng: 10 },
+        southWest: { lat: 0, lng: 0 },
+      },
+    ],
+  ])(
+    'expect to return a BoundingBox from an array: %j',
+    (input, expectation) => {
+      expect(insideBoundingBoxToBoundingBox(input)).toEqual(expectation);
+    }
+  );
+
+  it.each([
+    [''],
+    ['10'],
+    ['10,12'],
+    ['10,12,12'],
+    ['10.  15,12,12'],
+    ['10,12,a,14'],
+  ])('expect to throw an error with: %j', (input) => {
+    expect(() => insideBoundingBoxToBoundingBox(input)).toThrow(
+      `Invalid value for "insideBoundingBox" parameter: "${input}"`
+    );
+  });
+
+  it.each([[[]], [[[]]]])('expect to throw an error with: %j', (input) => {
+    // @ts-expect-error
+    expect(() => insideBoundingBoxToBoundingBox(input)).toThrow(
+      `Invalid value for "insideBoundingBox" parameter: [${input}]`
+    );
+  });
+});

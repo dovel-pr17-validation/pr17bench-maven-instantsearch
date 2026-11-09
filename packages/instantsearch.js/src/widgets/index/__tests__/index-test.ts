@@ -1,0 +1,4362 @@
+/**
+ * @jest-environment @instantsearch/testutils/jest-environment-jsdom.ts
+ */
+
+import {
+  createCompositionClient,
+  createSearchClient,
+  createSingleRecommendResponse,
+  createSingleSearchResponse,
+} from '@instantsearch/mocks';
+import { wait } from '@instantsearch/testutils';
+import algoliasearchHelper, {
+  SearchResults,
+  SearchParameters,
+  RecommendParameters,
+  RecommendResults,
+} from 'algoliasearch-helper';
+
+import { castToJestMock } from '../../../../../../tests/utils';
+import { createInstantSearch } from '../../../../test/createInstantSearch';
+import {
+  createWidget,
+  createIndexInitOptions,
+  createDisposeOptions,
+} from '../../../../test/createWidget';
+import {
+  connectHits,
+  connectPagination,
+  connectRefinementList,
+  connectSearchBox,
+} from '../../../connectors';
+import instantsearch from '../../../index.es';
+import { warning } from '../../../lib/utils';
+import index from '../index';
+
+import type { Widget } from '../../../types';
+import type { PlainSearchParameters } from 'algoliasearch-helper';
+
+describe('index', () => {
+  const createSearchBox = (args: Partial<Widget> = {}): Widget =>
+    createWidget({
+      dispose: jest.fn(({ state }) => {
+        return state.setQueryParameter('query', undefined);
+      }),
+      getWidgetUiState: jest.fn((uiState, { searchParameters }) => {
+        if (!searchParameters.query) {
+          return uiState;
+        }
+
+        return {
+          ...uiState,
+          query: searchParameters.query,
+        };
+      }),
+      getWidgetSearchParameters: jest.fn((searchParameters, { uiState }) => {
+        return searchParameters.setQueryParameter('query', uiState.query || '');
+      }),
+      ...args,
+    });
+
+  const createPagination = (args: Partial<Widget> = {}): Widget =>
+    createWidget({
+      dispose: jest.fn(({ state }) => {
+        return state.setQueryParameter('page', undefined);
+      }),
+      getWidgetUiState: jest.fn((uiState, { searchParameters }) => {
+        if (!searchParameters.page) {
+          return uiState;
+        }
+
+        return {
+          ...uiState,
+          page: searchParameters.page,
+        };
+      }),
+      getWidgetSearchParameters: jest.fn((searchParameters, { uiState }) => {
+        return searchParameters.setQueryParameter('page', uiState.page || 0);
+      }),
+      ...args,
+    });
+
+  const createConfigure = (
+    params: PlainSearchParameters,
+    args: Partial<Widget> = {}
+  ): Widget =>
+    createWidget({
+      dispose: jest.fn(({ state }) => {
+        return state.setQueryParameters(
+          Object.keys(params).reduce(
+            (acc, key) => ({
+              ...acc,
+              [key]: undefined,
+            }),
+            {}
+          )
+        );
+      }),
+      getWidgetUiState(uiState) {
+        return {
+          ...uiState,
+          configure: {
+            ...uiState.configure,
+            ...params,
+          },
+        };
+      },
+      getWidgetSearchParameters(searchParameters, { uiState }) {
+        return searchParameters.setQueryParameters({
+          ...uiState.configure,
+          ...params,
+        });
+      },
+      ...args,
+    });
+
+  const createFrequentlyBoughtTogether = (
+    args: Partial<Widget> = {}
+  ): Widget & { $$id: number } =>
+    createWidget({
+      dependsOn: 'recommend',
+      getWidgetParameters(parameters) {
+        return parameters.addFrequentlyBoughtTogether({
+          $$id: this.$$id!,
+          objectID: 'abc',
+        });
+      },
+      dispose({ recommendState }) {
+        return recommendState.removeParams(this.$$id!);
+      },
+      ...args,
+    } as Widget) as unknown as Widget & { $$id: number };
+
+  const virtualSearchBox = connectSearchBox(() => {});
+  const virtualPagination = connectPagination(() => {});
+  const virtualRefinementList = connectRefinementList(() => {});
+
+  it('throws without argument', () => {
+    expect(() => {
+      // @ts-expect-error
+      index();
+    }).toThrowErrorMatchingInlineSnapshot(`
+"The \`indexName\` option is required.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+  });
+
+  it('throws without `indexName` option', () => {
+    expect(() => {
+      // @ts-expect-error
+      index({});
+    }).toThrowErrorMatchingInlineSnapshot(`
+"The \`indexName\` option is required.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+  });
+
+  it('does not throw without `indexName` option when `isolated` is true', () => {
+    expect(() => {
+      index({ isolated: true });
+    }).not.toThrow();
+  });
+
+  it('is a widget', () => {
+    const widget = index({ indexName: 'indexName' });
+
+    expect(widget).toEqual(
+      expect.objectContaining({
+        $$type: 'ais.index',
+        init: expect.any(Function),
+        render: expect.any(Function),
+        dispose: expect.any(Function),
+      })
+    );
+  });
+
+  describe('addWidgets', () => {
+    it('adds given widgets to the instance', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      expect(instance.getWidgets()).toHaveLength(0);
+
+      instance.addWidgets([virtualSearchBox({}), virtualPagination({})]);
+
+      expect(instance.getWidgets()).toHaveLength(2);
+    });
+
+    it('accepts nested widgets', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+      const refinementList = virtualRefinementList({ attribute: 'brand' });
+
+      instance.addWidgets([searchBox, [pagination, refinementList]]);
+      expect(instance.getWidgets()).toHaveLength(3);
+      expect(instance.getWidgets()).toEqual([
+        searchBox,
+        pagination,
+        refinementList,
+      ]);
+    });
+
+    it('returns the instance to be able to chain the calls', () => {
+      const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+      const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+
+      topLevelInstance.addWidgets([
+        subLevelInstance.addWidgets([
+          virtualSearchBox({}),
+          virtualPagination({}),
+        ]),
+      ]);
+
+      expect(topLevelInstance.getWidgets()).toHaveLength(1);
+      expect(topLevelInstance.getWidgets()).toEqual([subLevelInstance]);
+    });
+
+    it('does not throw an error without the `init` step', () => {
+      const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+      const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+
+      expect(() =>
+        topLevelInstance.addWidgets([subLevelInstance])
+      ).not.toThrow();
+    });
+
+    it('throws an error with a value different than `array`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      expect(() => {
+        // @ts-expect-error
+        instance.addWidgets();
+      }).toThrow();
+
+      expect(() => {
+        // @ts-expect-error
+        instance.addWidgets(createWidget());
+      }).toThrowErrorMatchingInlineSnapshot(`
+"The \`addWidgets\` method expects an array of widgets.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+    });
+
+    it('throws an error with widgets that do not implement `init` or `render`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      expect(() => {
+        // @ts-expect-error
+        instance.addWidgets([{ dummy: true }]);
+      }).toThrowErrorMatchingInlineSnapshot(`
+"The widget definition expects a \`render\` and/or an \`init\` method.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+    });
+
+    it('adds generated `$$id` to widgets that depend on `recommend`', () => {
+      const instance = index({ indexName: 'indexName' });
+      const fbt1 = createFrequentlyBoughtTogether({});
+      const fbt2 = createFrequentlyBoughtTogether({});
+
+      instance.addWidgets([fbt1, fbt2]);
+
+      expect(fbt1.$$id).toBe(0);
+      expect(fbt2.$$id).toBe(1);
+    });
+
+    describe('with a started instance', () => {
+      it('updates the internal state with added widgets', () => {
+        const instance = index({ indexName: 'indexName' });
+
+        instance.addWidgets([
+          createSearchBox({
+            getWidgetSearchParameters(state) {
+              return state.setQueryParameter('query', 'Apple');
+            },
+          }),
+        ]);
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple',
+          })
+        );
+
+        instance.addWidgets([
+          createPagination({
+            getWidgetSearchParameters(state) {
+              return state.setQueryParameter('page', 5);
+            },
+          }),
+        ]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple',
+            page: 5,
+          })
+        );
+      });
+
+      it('calls getWidgetParameters after init on widgets that depend on recommend', () => {
+        const instance = index({ indexName: 'indexName' });
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        const fbt = createFrequentlyBoughtTogether({});
+        const getWidgetParameters = jest.spyOn(fbt, 'getWidgetParameters');
+        instance.addWidgets([fbt]);
+
+        expect(getWidgetParameters).toHaveBeenCalledTimes(1);
+      });
+
+      it('calls getWidgetParameters after init on widgets that depend on search and implement the function', () => {
+        const instance = index({ indexName: 'indexName' });
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        const searchbox = createSearchBox({
+          dependsOn: 'search',
+          getWidgetParameters: jest.fn((searchParameters, { uiState }) => {
+            return searchParameters.setQueryParameter(
+              'query',
+              uiState.query || ''
+            );
+          }),
+        });
+        instance.addWidgets([searchbox]);
+
+        expect(searchbox.getWidgetParameters).toHaveBeenCalledTimes(1);
+      });
+
+      it('calls `init` on the added widgets', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const widgets = [virtualSearchBox({}), virtualPagination({})];
+        widgets.forEach((widget) => jest.spyOn(widget, 'init'));
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        widgets.forEach((widget) => {
+          expect(widget.init).toHaveBeenCalledTimes(0);
+        });
+
+        instance.addWidgets(widgets);
+
+        widgets.forEach((widget) => {
+          expect(widget.init).toHaveBeenCalledTimes(1);
+          expect(widget.init).toHaveBeenCalledWith({
+            instantSearchInstance,
+            parent: instance,
+            uiState: {},
+            helper: instance.getHelper(),
+            state: instance.getHelper()!.state,
+            renderState: expect.any(Object),
+            templatesConfig: instantSearchInstance.templatesConfig,
+            createURL: expect.any(Function),
+            scopedResults: [],
+            status: instantSearchInstance.status,
+            searchMetadata: {
+              isSearchStalled: instantSearchInstance.status === 'stalled',
+            },
+          });
+        });
+      });
+
+      it('forwards initial UiState to inner indices', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          _initialUiState: {
+            indexName: {
+              query: 'xxx',
+            },
+            two: {
+              query: 'inner',
+            },
+          },
+        });
+        const inner = index({ indexName: 'two' });
+        jest.spyOn(inner, 'init');
+
+        const widgets = [virtualSearchBox({}), virtualPagination({}), inner];
+        widgets.forEach((widget) => jest.spyOn(widget, 'init'));
+        const innerWidgets = [virtualSearchBox({})];
+        innerWidgets.forEach((widget) => jest.spyOn(widget, 'init'));
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        widgets.forEach((widget) => {
+          expect(widget.init).toHaveBeenCalledTimes(0);
+        });
+
+        instance.addWidgets(widgets);
+
+        widgets.forEach((widget) => {
+          expect(widget.init).toHaveBeenCalledTimes(1);
+          expect(widget.init).toHaveBeenCalledWith({
+            instantSearchInstance,
+            parent: instance,
+            uiState: {
+              indexName: {
+                query: 'xxx',
+              },
+              two: {
+                query: 'inner',
+              },
+            },
+            helper: instance.getHelper(),
+            state: instance.getHelper()!.state,
+            renderState: expect.any(Object),
+            templatesConfig: instantSearchInstance.templatesConfig,
+            createURL: expect.any(Function),
+            scopedResults: [],
+            status: instantSearchInstance.status,
+            searchMetadata: {
+              isSearchStalled: instantSearchInstance.status === 'stalled',
+            },
+          });
+        });
+
+        inner.addWidgets(innerWidgets);
+
+        expect(inner.getWidgetUiState({})).toEqual({
+          two: {
+            query: 'inner',
+          },
+        });
+      });
+
+      it('schedules a search to take the added widgets into account', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          scheduleSearch: jest.fn() as any,
+        });
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+
+        instance.addWidgets([virtualSearchBox({})]);
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not trigger a search without widgets to add', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          scheduleSearch: jest.fn() as any,
+        });
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+
+        instance.addWidgets([]);
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('removeWidgets', () => {
+    it('removes given widget from the instance', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      expect(instance.getWidgets()).toHaveLength(2);
+
+      instance.removeWidgets([pagination]);
+
+      expect(instance.getWidgets()).toEqual([searchBox]);
+    });
+
+    it('clears the parent only on removed widgets', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+      instance.removeWidgets([pagination]);
+
+      expect(searchBox.parent).toBe(instance);
+      expect(pagination.parent).toBeUndefined();
+    });
+
+    it('removes given widgets from the instance', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      expect(instance.getWidgets()).toHaveLength(2);
+
+      instance.removeWidgets([searchBox, pagination]);
+
+      expect(instance.getWidgets()).toHaveLength(0);
+    });
+
+    it('accepts nested widgets', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+      const refinementList = virtualRefinementList({ attribute: 'brand' });
+
+      instance.addWidgets([searchBox, pagination, refinementList]);
+
+      expect(instance.getWidgets()).toHaveLength(3);
+
+      instance.removeWidgets([searchBox, [pagination, refinementList]]);
+      expect(instance.getWidgets()).toHaveLength(0);
+    });
+
+    it('returns the instance to be able to chain the calls', () => {
+      const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+      const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      topLevelInstance.addWidgets([
+        subLevelInstance
+          .addWidgets([searchBox, pagination])
+          .removeWidgets([searchBox, pagination]),
+      ]);
+
+      expect(topLevelInstance.getWidgets()).toHaveLength(1);
+      expect(topLevelInstance.getWidgets()).toEqual([subLevelInstance]);
+    });
+
+    it('does not throw an error without the `init` step', () => {
+      const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+      const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+
+      topLevelInstance.addWidgets([subLevelInstance]);
+
+      expect(() =>
+        topLevelInstance.removeWidgets([subLevelInstance])
+      ).not.toThrow();
+    });
+
+    it('throws an error with a value different than `array`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      expect(() => {
+        // @ts-expect-error
+        instance.removeWidgets();
+      }).toThrow();
+
+      expect(() => {
+        // @ts-expect-error
+        instance.removeWidgets(createWidget());
+      }).toThrowErrorMatchingInlineSnapshot(`
+"The \`removeWidgets\` method expects an array of widgets.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+    });
+
+    it('throws an error with widgets that do not implement `dispose`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      expect(() => {
+        instance.removeWidgets([{ dummy: true } as any]);
+      }).toThrowErrorMatchingInlineSnapshot(`
+"The widget definition expects a \`dispose\` method.
+
+See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+`);
+    });
+
+    describe('with a started instance', () => {
+      it('updates the internal state with removed widgets', () => {
+        const instance = index({ indexName: 'indexName' });
+        const pagination = createPagination({
+          getWidgetSearchParameters(state) {
+            return state.setQueryParameter('page', 5);
+          },
+        });
+
+        const fbt = createFrequentlyBoughtTogether();
+
+        instance.addWidgets([
+          createSearchBox({
+            getWidgetSearchParameters(state) {
+              return state.setQueryParameter('query', 'Apple');
+            },
+          }),
+          pagination,
+          fbt,
+        ]);
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple',
+            page: 5,
+          })
+        );
+
+        expect(instance.getHelper()!.recommendState).toEqual(
+          new RecommendParameters().addFrequentlyBoughtTogether({
+            objectID: 'abc',
+            $$id: fbt.$$id,
+          })
+        );
+
+        instance.removeWidgets([pagination, fbt]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple',
+          })
+        );
+
+        expect(instance.getHelper()!.recommendState).toEqual(
+          new RecommendParameters()
+        );
+      });
+
+      it('updates the local `uiState` with removed widgets', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+
+        const configureTopLevel = createConfigure({
+          distinct: true,
+        });
+
+        const configureSubLevel = createConfigure({
+          hitsPerPage: 5,
+        });
+
+        instance.addWidgets([
+          configureTopLevel,
+          configureSubLevel,
+          virtualSearchBox({}),
+        ]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Simulate a state change
+        instance.getHelper()!.setQueryParameter('query', 'Apple iPhone');
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple iPhone',
+            hitsPerPage: 5,
+            distinct: true,
+          })
+        );
+
+        instance.removeWidgets([configureSubLevel]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple iPhone',
+            distinct: true,
+          })
+        );
+
+        // `instantSearchInstance` must have been notified 2 times of the `uiState` changes:
+        // 1. By the helper `change` event callback, for the change to the query parameters
+        // 2. By the helper `change` event callback, for the child widgets being disposed
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).toHaveBeenCalledTimes(2);
+      });
+
+      it('cleans shared refinements when `preserveSharedStateOnUnmount` is unset', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+
+        const refinementList1 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        const refinementList2 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        instance.addWidgets([refinementList1, refinementList2]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Simulate a state change
+        instance.getHelper()!.addDisjunctiveFacetRefinement('brand', 'Apple');
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: ['Apple'],
+            },
+          })
+        );
+
+        instance.removeWidgets([refinementList2]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: [],
+            },
+          })
+        );
+      });
+
+      it('cleans shared refinements when `preserveSharedStateOnUnmount` is false', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          future: { preserveSharedStateOnUnmount: false },
+        });
+
+        const refinementList1 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        const refinementList2 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        instance.addWidgets([refinementList1, refinementList2]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Simulate a state change
+        instance.getHelper()!.addDisjunctiveFacetRefinement('brand', 'Apple');
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: ['Apple'],
+            },
+          })
+        );
+
+        instance.removeWidgets([refinementList2]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: [],
+            },
+          })
+        );
+      });
+
+      it('preserves shared refinements when `preserveSharedStateOnUnmount` is true', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          future: { preserveSharedStateOnUnmount: true },
+        });
+
+        const refinementList1 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        const refinementList2 = virtualRefinementList({
+          attribute: 'brand',
+        });
+
+        instance.addWidgets([refinementList1, refinementList2]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Simulate a state change
+        instance.getHelper()!.addDisjunctiveFacetRefinement('brand', 'Apple');
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: ['Apple'],
+            },
+          })
+        );
+
+        instance.removeWidgets([refinementList2]);
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            maxValuesPerFacet: 10,
+            disjunctiveFacets: ['brand'],
+            disjunctiveFacetsRefinements: {
+              brand: ['Apple'],
+            },
+          })
+        );
+      });
+
+      it('calls `dispose` on the removed widgets', () => {
+        const instance = index({ indexName: 'indexName' });
+        const widgets = [
+          createSearchBox({
+            dispose: jest.fn(),
+          }),
+          createPagination({
+            dispose: jest.fn(),
+          }),
+        ];
+
+        instance.addWidgets(widgets);
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        widgets.forEach((widget) => {
+          expect(widget.dispose).toHaveBeenCalledTimes(0);
+        });
+
+        instance.removeWidgets(widgets);
+
+        widgets.forEach((widget) => {
+          expect(widget.dispose).toHaveBeenCalledTimes(1);
+          expect(widget.dispose).toHaveBeenCalledWith({
+            helper: instance.getHelper(),
+            state: instance.getHelper()!.state,
+            recommendState: instance.getHelper()!.recommendState,
+            parent: instance,
+          });
+        });
+      });
+
+      it('schedules a search to take the removed widgets into account', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          scheduleSearch: jest.fn() as any,
+        });
+
+        const searchBox = virtualSearchBox({});
+
+        instance.addWidgets([searchBox, virtualPagination({})]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+
+        instance.removeWidgets([searchBox]);
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not schedule a search without widgets to remove', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          scheduleSearch: jest.fn() as any,
+        });
+
+        const searchBox = virtualSearchBox({});
+
+        instance.addWidgets([searchBox]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+
+        instance.removeWidgets([]);
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+      });
+
+      it('does not schedule a search without widgets in the index', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          scheduleSearch: jest.fn() as any,
+        });
+
+        const searchBox = virtualSearchBox({});
+
+        instance.addWidgets([searchBox]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+
+        instance.removeWidgets([searchBox]);
+
+        expect(instantSearchInstance.scheduleSearch).toHaveBeenCalledTimes(0);
+      });
+    });
+  });
+
+  describe('updateWidget', () => {
+    it('throws an error with a widget that does not implement `dispose`', () => {
+      const instance = index({ indexName: 'indexName' });
+      const widget = createWidget();
+      delete (widget as any).dispose;
+
+      expect(() => {
+        instance.updateWidget(widget, virtualSearchBox({}));
+      }).toThrowErrorMatchingInlineSnapshot(`
+        "The widget definition expects a \`dispose\` method.
+
+        See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+      `);
+    });
+
+    it('throws an error with a widget that implements neither `init` nor `render`', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+
+      instance.addWidgets([searchBox]);
+
+      expect(() => {
+        instance.updateWidget(searchBox, { dispose() {} } as any);
+      }).toThrowErrorMatchingInlineSnapshot(`
+        "The widget definition expects a \`render\` and/or an \`init\` method.
+
+        See documentation: https://www.algolia.com/doc/api-reference/widgets/index-widget/js/"
+      `);
+    });
+
+    it('replaces the widget in place, keeping its position', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+      const nextPagination = virtualPagination({ padding: 4 });
+      const refinementList = virtualRefinementList({ attribute: 'brand' });
+
+      instance.addWidgets([searchBox, pagination, refinementList]);
+      instance.updateWidget(pagination, nextPagination);
+
+      expect(instance.getWidgets()).toEqual([
+        searchBox,
+        nextPagination,
+        refinementList,
+      ]);
+    });
+
+    it('appends the next widget when the previous one is not mounted', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox]);
+      instance.updateWidget(pagination, virtualPagination({ padding: 4 }));
+
+      expect(instance.getWidgets()).toHaveLength(2);
+    });
+
+    it('moves the parent over to the next widget', () => {
+      const instance = index({ indexName: 'indexName' });
+      const pagination = virtualPagination({});
+      const nextPagination = virtualPagination({ padding: 4 });
+
+      instance.addWidgets([pagination]);
+      instance.updateWidget(pagination, nextPagination);
+
+      expect(pagination.parent).toBeUndefined();
+      expect(nextPagination.parent).toBe(instance);
+    });
+
+    it('returns the instance to be able to chain the calls', () => {
+      const instance = index({ indexName: 'indexName' });
+      const pagination = virtualPagination({});
+
+      expect(
+        instance
+          .addWidgets([pagination])
+          .updateWidget(pagination, virtualPagination({ padding: 4 }))
+      ).toBe(instance);
+    });
+
+    it('does not throw an error without the `init` step', () => {
+      const instance = index({ indexName: 'indexName' });
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([pagination]);
+
+      expect(() => {
+        instance.updateWidget(pagination, virtualPagination({ padding: 4 }));
+      }).not.toThrow();
+    });
+
+    describe('with a started instance', () => {
+      it('keeps the `uiState` the next widget still claims', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const pagination = virtualPagination({});
+
+        instance.addWidgets([virtualSearchBox({}), pagination]);
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+            uiState: { indexName: { page: 4 } },
+          })
+        );
+
+        expect(instance.getHelper()!.state.page).toEqual(3);
+
+        instance.updateWidget(pagination, virtualPagination({ padding: 4 }));
+
+        expect(instance.getHelper()!.state.page).toEqual(3);
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: { page: 4 },
+        });
+      });
+
+      it('forgets the `uiState` the next widget no longer claims', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const refinementList = virtualRefinementList({ attribute: 'brand' });
+
+        instance.addWidgets([virtualSearchBox({}), refinementList]);
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+            uiState: { indexName: { refinementList: { brand: ['Apple'] } } },
+          })
+        );
+
+        expect(
+          instance.getHelper()!.state.disjunctiveFacetsRefinements
+        ).toEqual({ brand: ['Apple'] });
+
+        instance.updateWidget(
+          refinementList,
+          virtualRefinementList({ attribute: 'categories' })
+        );
+
+        expect(
+          instance.getHelper()!.state.disjunctiveFacetsRefinements
+        ).toEqual({ categories: [] });
+        expect(instance.getWidgetUiState({})).toEqual({ indexName: {} });
+      });
+
+      it('disposes the previous widget and inits the next one', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const previousWidget = createWidget();
+        const nextWidget = createWidget();
+
+        instance.addWidgets([previousWidget]);
+        instance.init(
+          createIndexInitOptions({ instantSearchInstance, parent: null })
+        );
+
+        instance.updateWidget(previousWidget, nextWidget);
+
+        expect(previousWidget.dispose).toHaveBeenCalledTimes(1);
+        expect(nextWidget.init).toHaveBeenCalledTimes(1);
+        // The previous widget was only initialized by the `init` step above.
+        expect(previousWidget.init).toHaveBeenCalledTimes(1);
+      });
+
+      it('notifies the instance of the `uiState` change only once', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const pagination = virtualPagination({});
+
+        instance.addWidgets([virtualSearchBox({}), pagination]);
+        instance.init(
+          createIndexInitOptions({ instantSearchInstance, parent: null })
+        );
+
+        castToJestMock(instantSearchInstance.onInternalStateChange).mockClear();
+
+        // A `removeWidgets` + `addWidgets` pair writes to the helper twice, and
+        // therefore notifies twice.
+        instance.updateWidget(pagination, virtualPagination({ padding: 4 }));
+
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('createURL', () => {
+    it('default url returns #', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      instance.init(createIndexInitOptions());
+
+      expect(instance.createURL(new SearchParameters())).toEqual('#');
+    });
+
+    it('calls the createURL of routing', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance: createInstantSearch({
+            // @ts-expect-error
+            _createURL(routeState) {
+              return routeState;
+            },
+          }),
+        })
+      );
+
+      expect(instance.createURL(new SearchParameters())).toEqual({
+        indexName: {},
+      });
+    });
+
+    it('create URLs with custom helper state', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance: createInstantSearch({
+            // @ts-expect-error
+            _createURL(routeState) {
+              return routeState;
+            },
+          }),
+        })
+      );
+
+      expect(instance.createURL(new SearchParameters({ page: 99 }))).toEqual({
+        indexName: { page: 100 },
+      });
+    });
+
+    it('create URLs with non-namesake helper state', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      const container = document.createElement('div');
+      document.body.append(container);
+
+      instance.addWidgets([
+        searchBox,
+        pagination,
+        virtualRefinementList({ attribute: 'doggies' }),
+      ]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance: createInstantSearch({
+            // @ts-expect-error
+            _createURL(routeState) {
+              return routeState;
+            },
+          }),
+        })
+      );
+
+      expect(
+        instance.createURL(
+          new SearchParameters({
+            disjunctiveFacets: ['doggies'],
+            disjunctiveFacetsRefinements: { doggies: ['zap'] },
+          })
+        )
+      ).toEqual({
+        indexName: { refinementList: { doggies: ['zap'] } },
+      });
+    });
+  });
+
+  describe('getScopedResults', () => {
+    it('gets deep results', async () => {
+      const level0 = index({ indexName: 'level0IndexName' });
+      const level1 = index({ indexName: 'level1IndexName' });
+      const level2 = index({ indexName: 'level2IndexName' });
+      const level21 = index({ indexName: 'level21IndexName' });
+      const level22 = index({ indexName: 'level22IndexName' });
+      const level221 = index({ indexName: 'level221IndexName' });
+      const level3 = index({ indexName: 'level3IndexName' });
+      const searchBoxLevel0 = virtualSearchBox({});
+      const searchBoxLevel1 = virtualSearchBox({});
+      const searchBoxLevel21 = virtualSearchBox({});
+
+      level0.addWidgets([
+        searchBoxLevel0,
+        level1.addWidgets([searchBoxLevel1]),
+        level2.addWidgets([
+          virtualSearchBox({}),
+          level21.addWidgets([searchBoxLevel21]),
+          level22.addWidgets([
+            virtualSearchBox({}),
+            level221.addWidgets([virtualSearchBox({})]),
+          ]),
+        ]),
+        level3.addWidgets([virtualSearchBox({})]),
+      ]);
+
+      level0.init(createIndexInitOptions({ parent: null }));
+
+      // Simulate a call to search from a widget - this step is required otherwise
+      // the DerivedHelper does not contain the results. The `lastResults` attribute
+      // is set once the `result` event is emitted.
+      level0.getHelper()!.search();
+
+      await wait(0);
+
+      expect(level1.getScopedResults()).toEqual([
+        // Root index
+        {
+          indexId: 'level1IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level1.getHelper(),
+        },
+        // Siblings and children
+        {
+          indexId: 'level2IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level2.getHelper(),
+        },
+        {
+          indexId: 'level21IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level21.getHelper(),
+        },
+        {
+          indexId: 'level22IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level22.getHelper(),
+        },
+        {
+          indexId: 'level221IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level221.getHelper(),
+        },
+        {
+          indexId: 'level3IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level3.getHelper(),
+        },
+      ]);
+
+      expect(level21.getScopedResults()).toEqual([
+        // Root index
+        {
+          indexId: 'level21IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level21.getHelper(),
+        },
+        // Siblings and children
+        {
+          indexId: 'level22IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level22.getHelper(),
+        },
+        {
+          indexId: 'level221IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level221.getHelper(),
+        },
+      ]);
+
+      expect(level0.getScopedResults()).toEqual([
+        // Root index
+        {
+          indexId: 'level0IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level0.getHelper(),
+        },
+        // Siblings and children
+        {
+          indexId: 'level1IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level1.getHelper(),
+        },
+        {
+          indexId: 'level2IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level2.getHelper(),
+        },
+        {
+          indexId: 'level21IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level21.getHelper(),
+        },
+        {
+          indexId: 'level22IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level22.getHelper(),
+        },
+        {
+          indexId: 'level221IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level221.getHelper(),
+        },
+        {
+          indexId: 'level3IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level3.getHelper(),
+        },
+      ]);
+    });
+
+    it('only gets children results if indexName is not set on main index', async () => {
+      const level0 = index({ indexName: '' });
+      const level1 = index({ indexName: 'level1IndexName' });
+      const level2 = index({ indexName: 'level2IndexName' });
+
+      level0.addWidgets([
+        level1.addWidgets([virtualSearchBox({})]),
+        level2.addWidgets([virtualSearchBox({})]),
+      ]);
+
+      level0.init(createIndexInitOptions({ parent: null }));
+
+      // Simulate a call to search from a widget - this step is required otherwise
+      // the DerivedHelper does not contain the results. The `lastResults` attribute
+      // is set once the `result` event is emitted.
+      level0.getHelper()!.search();
+
+      await wait(0);
+
+      expect(level0.getScopedResults()).toEqual([
+        // Only children
+        {
+          indexId: 'level1IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level1.getHelper(),
+        },
+        {
+          indexId: 'level2IndexName',
+          results: expect.any(algoliasearchHelper.SearchResults),
+          helper: level2.getHelper(),
+        },
+      ]);
+    });
+  });
+
+  describe('init', () => {
+    it('forwards the `search` call to the main instance', () => {
+      const instance = index({ indexName: 'indexName' });
+      const mainHelper = algoliasearchHelper({} as any, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      const search = jest.spyOn(mainHelper, 'search').mockImplementation();
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Simulate a call to search from a widget
+      instance.getHelper()!.search();
+
+      expect(search).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the internal state for the queries', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      instance.addWidgets([
+        createSearchBox({
+          getWidgetSearchParameters(state) {
+            return state.setQueryParameter('query', 'Apple');
+          },
+        }),
+        createPagination({
+          getWidgetSearchParameters(state) {
+            return state.setQueryParameter('page', 5);
+          },
+        }),
+      ]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Simulate a call to search from a widget
+      instance.getHelper()!.search();
+
+      expect(searchClient.search).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          {
+            indexName: 'indexName',
+            params: expect.objectContaining({
+              query: 'Apple',
+              page: 5,
+            }),
+          },
+        ])
+      );
+    });
+
+    it('calls getWidgetParameters on widgets that depend on recommend', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      const fbt = createFrequentlyBoughtTogether({});
+      const getWidgetParameters = jest.spyOn(fbt, 'getWidgetParameters');
+      instance.addWidgets([fbt]);
+
+      instance.init(createIndexInitOptions({ parent: null }));
+
+      expect(getWidgetParameters).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls getWidgetParameters on widgets that depend on search and implement the function', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      const searchbox = createSearchBox({
+        dependsOn: 'search',
+        getWidgetParameters: jest.fn((searchParameters, { uiState }) => {
+          return searchParameters.setQueryParameter(
+            'query',
+            uiState.query || ''
+          );
+        }),
+      });
+      instance.addWidgets([searchbox]);
+
+      instance.init(createIndexInitOptions({ parent: null }));
+
+      expect(searchbox.getWidgetParameters).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the index set by the widget for the queries', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      instance.addWidgets([
+        createWidget({
+          getWidgetSearchParameters(state) {
+            return state.setQueryParameter('index', 'widgetIndexName');
+          },
+        }),
+      ]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Simulate a call to search from a widget
+      instance.getHelper()!.search();
+
+      expect(searchClient.search).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          {
+            indexName: 'widgetIndexName',
+            params: expect.any(Object),
+          },
+        ])
+      );
+    });
+
+    it('inherits from the parent states for the queries', () => {
+      const level0 = index({ indexName: 'level0IndexName' });
+      const level1 = index({ indexName: 'level1IndexName' });
+      const level2 = index({ indexName: 'level2IndexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      level0.addWidgets([
+        createConfigure({
+          hitsPerPage: 5,
+        }),
+
+        createSearchBox({
+          getWidgetSearchParameters(searchParameters) {
+            return searchParameters.setQueryParameter('query', 'Apple');
+          },
+        }),
+
+        createPagination({
+          getWidgetSearchParameters(searchParameters) {
+            return searchParameters.setQueryParameter('page', 1);
+          },
+        }),
+
+        level1.addWidgets([
+          createSearchBox({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter(
+                'query',
+                'Apple iPhone'
+              );
+            },
+          }),
+
+          createPagination({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('page', 2);
+            },
+          }),
+
+          level2.addWidgets([
+            createSearchBox({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter(
+                  'query',
+                  'Apple iPhone XS'
+                );
+              },
+            }),
+          ]),
+        ]),
+      ]);
+
+      level0.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      level0.getHelper()!.search();
+
+      expect(searchClient.search).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          {
+            indexName: 'level0IndexName',
+            params: expect.objectContaining({
+              hitsPerPage: 5,
+              query: 'Apple',
+              page: 1,
+            }),
+          },
+          {
+            indexName: 'level1IndexName',
+            params: expect.objectContaining({
+              hitsPerPage: 5,
+              query: 'Apple iPhone',
+              page: 2,
+            }),
+          },
+          {
+            indexName: 'level2IndexName',
+            params: expect.objectContaining({
+              hitsPerPage: 5,
+              query: 'Apple iPhone XS',
+              page: 2,
+            }),
+          },
+        ])
+      );
+    });
+
+    it('uses the internal state for the SFFV queries', async () => {
+      const searchClient = createSearchClient();
+      const search = instantsearch({
+        indexName: 'root',
+        searchClient,
+      }).addWidgets([
+        // index has widgets that set search parameters
+        index({ indexName: 'index' }).addWidgets([
+          virtualSearchBox({}),
+          virtualPagination({}),
+          virtualRefinementList({
+            attribute: 'brand',
+            limit: 10,
+          }),
+        ]),
+      ]);
+
+      search.start();
+
+      // Set parameters in the index
+      search.renderState.index.searchBox!.refine('Apple iPhone');
+      search.renderState.index.pagination!.refine(3);
+
+      await wait(0);
+
+      const searchForItems =
+        search.renderState.index.refinementList!.brand.searchForItems;
+
+      // Search for facet values
+      searchForItems('Samsung');
+      await wait(0);
+
+      expect(searchClient.searchForFacetValues).toHaveBeenCalledTimes(1);
+      expect(searchClient.searchForFacetValues).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          {
+            indexName: 'index',
+            params: expect.objectContaining({
+              facetName: 'brand',
+              facetQuery: 'Samsung',
+              maxFacetHits: 10,
+              // Notably: index parameters are included
+              query: 'Apple iPhone',
+              page: 3,
+              highlightPreTag: '__ais-highlight__',
+              highlightPostTag: '__/ais-highlight__',
+            }),
+          },
+        ])
+      );
+    });
+
+    it('uses the parent state for the SFFV queries', async () => {
+      const searchClient = createSearchClient();
+      const search = instantsearch({
+        indexName: 'root',
+        searchClient,
+      }).addWidgets([
+        // Parent index has widgets that set search parameters
+        index({ indexName: 'parentIndexName' }).addWidgets([
+          virtualSearchBox({}),
+          virtualPagination({}),
+          // Child index only has a refinementList widget
+          index({ indexName: 'childIndexName' }).addWidgets([
+            virtualRefinementList({
+              attribute: 'brand',
+              limit: 10,
+            }),
+          ]),
+        ]),
+      ]);
+
+      search.start();
+
+      // Set parameters in the parent index
+      search.renderState.parentIndexName.searchBox!.refine('Apple iPhone');
+      search.renderState.parentIndexName.pagination!.refine(3);
+
+      await wait(0);
+
+      const searchForItems =
+        search.renderState.childIndexName.refinementList!.brand.searchForItems;
+
+      // Search for facet values
+      searchForItems('Samsung');
+
+      await wait(0);
+
+      expect(searchClient.searchForFacetValues).toHaveBeenCalledTimes(1);
+      expect(searchClient.searchForFacetValues).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          {
+            indexName: 'childIndexName',
+            params: expect.objectContaining({
+              facetName: 'brand',
+              facetQuery: 'Samsung',
+              maxFacetHits: 10,
+              // Notably: parent index parameters are included
+              query: 'Apple iPhone',
+              page: 3,
+              highlightPreTag: '__ais-highlight__',
+              highlightPostTag: '__/ais-highlight__',
+            }),
+          },
+        ])
+      );
+    });
+
+    it('schedules a render on DerivedHelper results', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch({
+        scheduleRender: jest.fn() as any,
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Simulate a call to search from a widget
+      instance.getHelper()!.search();
+
+      expect(instantSearchInstance.scheduleRender).toHaveBeenCalledTimes(0);
+
+      await wait(0);
+
+      expect(instantSearchInstance.scheduleRender).toHaveBeenCalledTimes(1);
+    });
+
+    it('schedules a stalled render on DerivedHelper search', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch({
+        scheduleStalledRender: jest.fn() as any,
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      expect(instantSearchInstance.scheduleStalledRender).toHaveBeenCalledTimes(
+        0
+      );
+
+      // Simulate a call to search from a widget
+      instance.getHelper()!.search();
+
+      expect(instantSearchInstance.scheduleStalledRender).toHaveBeenCalledTimes(
+        1
+      );
+    });
+
+    it('calls `init` on its widgets', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+      const widgets = [virtualSearchBox({}), virtualPagination({})];
+      widgets.forEach((widget) => jest.spyOn(widget, 'init'));
+
+      instance.addWidgets(widgets);
+
+      widgets.forEach((widget) => {
+        expect(widget.init).toHaveBeenCalledTimes(0);
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      widgets.forEach((widget) => {
+        expect(widget.init).toHaveBeenCalledTimes(1);
+        expect(widget.init).toHaveBeenCalledWith({
+          instantSearchInstance,
+          parent: instance,
+          uiState: {},
+          helper: instance.getHelper(),
+          state: instance.getHelper()!.state,
+          renderState: expect.any(Object),
+          templatesConfig: instantSearchInstance.templatesConfig,
+          createURL: expect.any(Function),
+          scopedResults: [],
+          status: instantSearchInstance.status,
+          searchMetadata: {
+            isSearchStalled: instantSearchInstance.status === 'stalled',
+          },
+        });
+      });
+    });
+
+    describe('with page reset', () => {
+      it('resets pages of nested indices when the state changes', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const level2 = index({ indexName: 'level2IndexName' });
+        const level3 = index({ indexName: 'level3IndexName' });
+        const searchClient = createSearchClient();
+        const mainHelper = algoliasearchHelper(searchClient, '', {});
+        const instantSearchInstance = createInstantSearch({
+          mainHelper,
+        });
+
+        level0.addWidgets([
+          createConfigure({
+            hitsPerPage: 5,
+          }),
+
+          createSearchBox({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('query', 'Apple');
+            },
+          }),
+
+          createPagination({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('page', 1);
+            },
+          }),
+
+          level1.addWidgets([
+            createSearchBox({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter(
+                  'query',
+                  'Apple iPhone'
+                );
+              },
+            }),
+
+            createPagination({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter('page', 2);
+              },
+            }),
+
+            level2.addWidgets([
+              createSearchBox({
+                getWidgetSearchParameters(searchParameters) {
+                  return searchParameters.setQueryParameter(
+                    'query',
+                    'Apple iPhone XS'
+                  );
+                },
+              }),
+
+              createPagination({
+                getWidgetSearchParameters(searchParameters) {
+                  return searchParameters.setQueryParameter('page', 3);
+                },
+              }),
+
+              level3.addWidgets([
+                createSearchBox({
+                  getWidgetSearchParameters(searchParameters) {
+                    return searchParameters.setQueryParameter(
+                      'query',
+                      'Apple iPhone XS Red'
+                    );
+                  },
+                }),
+
+                createPagination({
+                  getWidgetSearchParameters(searchParameters) {
+                    return searchParameters.setQueryParameter('page', 4);
+                  },
+                }),
+              ]),
+            ]),
+          ]),
+        ]);
+
+        level0.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Setting a query is considered as a change
+        level1.getHelper()!.setQuery('Hey').search();
+
+        expect(searchClient.search).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            {
+              indexName: 'level0IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple',
+                page: 1,
+              }),
+            },
+            {
+              indexName: 'level1IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Hey',
+                page: 0,
+              }),
+            },
+            {
+              indexName: 'level2IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS',
+                page: 0,
+              }),
+            },
+            {
+              indexName: 'level3IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS Red',
+                page: 0,
+              }),
+            },
+          ])
+        );
+      });
+
+      it('resets pages of nested indices triggers an `uiState` change', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const level2 = index({ indexName: 'level2IndexName' });
+        const level3 = index({ indexName: 'level3IndexName' });
+
+        level0.addWidgets([
+          virtualSearchBox({}),
+          virtualPagination({}),
+
+          level1.addWidgets([
+            virtualSearchBox({}),
+            virtualPagination({}),
+
+            level2.addWidgets([
+              virtualSearchBox({}),
+              virtualPagination({}),
+
+              level3.addWidgets([virtualSearchBox({}), virtualPagination({})]),
+            ]),
+          ]),
+        ]);
+
+        level0.init(createIndexInitOptions({ parent: null }));
+
+        level0
+          .getHelper()!
+          .setQueryParameter('query', 'Apple')
+          .setQueryParameter('page', 1);
+
+        level1
+          .getHelper()!
+          .setQueryParameter('query', 'Apple iPhone')
+          .setQueryParameter('page', 2);
+
+        level2
+          .getHelper()!
+          .setQueryParameter('query', 'Apple iPhone XS')
+          .setQueryParameter('page', 3);
+
+        level3
+          .getHelper()!
+          .setQueryParameter('query', 'Apple iPhone XS Red')
+          .setQueryParameter('page', 4);
+
+        expect(level0.getWidgetUiState({})).toEqual({
+          level0IndexName: {
+            query: 'Apple',
+            page: 2,
+          },
+          level1IndexName: {
+            query: 'Apple iPhone',
+            page: 3,
+          },
+          level2IndexName: {
+            query: 'Apple iPhone XS',
+            page: 4,
+          },
+          level3IndexName: {
+            query: 'Apple iPhone XS Red',
+            page: 5,
+          },
+        });
+
+        // Setting a query is considered as a change
+        level0.getHelper()!.setQuery('Hey').search();
+
+        expect(level0.getWidgetUiState({})).toEqual({
+          level0IndexName: {
+            query: 'Hey',
+          },
+          level1IndexName: {
+            query: 'Apple iPhone',
+          },
+          level2IndexName: {
+            query: 'Apple iPhone XS',
+          },
+          level3IndexName: {
+            query: 'Apple iPhone XS Red',
+          },
+        });
+      });
+
+      it('does not reset pages of nested indices when only the page changes', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const level2 = index({ indexName: 'level2IndexName' });
+        const level3 = index({ indexName: 'level3IndexName' });
+        const searchClient = createSearchClient();
+        const mainHelper = algoliasearchHelper(searchClient, '', {});
+        const instantSearchInstance = createInstantSearch({
+          mainHelper,
+        });
+
+        level0.addWidgets([
+          createConfigure({
+            hitsPerPage: 5,
+          }),
+
+          createSearchBox({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('query', 'Apple');
+            },
+          }),
+
+          createPagination({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('page', 1);
+            },
+          }),
+
+          level1.addWidgets([
+            createSearchBox({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter(
+                  'query',
+                  'Apple iPhone'
+                );
+              },
+            }),
+
+            createPagination({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter('page', 2);
+              },
+            }),
+
+            level2.addWidgets([
+              createSearchBox({
+                getWidgetSearchParameters(searchParameters) {
+                  return searchParameters.setQueryParameter(
+                    'query',
+                    'Apple iPhone XS'
+                  );
+                },
+              }),
+
+              createPagination({
+                getWidgetSearchParameters(searchParameters) {
+                  return searchParameters.setQueryParameter('page', 3);
+                },
+              }),
+
+              level3.addWidgets([
+                createSearchBox({
+                  getWidgetSearchParameters(searchParameters) {
+                    return searchParameters.setQueryParameter(
+                      'query',
+                      'Apple iPhone XS Red'
+                    );
+                  },
+                }),
+
+                createPagination({
+                  getWidgetSearchParameters(searchParameters) {
+                    return searchParameters.setQueryParameter('page', 4);
+                  },
+                }),
+              ]),
+            ]),
+          ]),
+        ]);
+
+        level0.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        level1.getHelper()!.setPage(4).search();
+
+        expect(searchClient.search).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            {
+              indexName: 'level0IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple',
+                page: 1,
+              }),
+            },
+            {
+              indexName: 'level1IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone',
+                page: 4,
+              }),
+            },
+            {
+              indexName: 'level2IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS',
+                page: 3,
+              }),
+            },
+            {
+              indexName: 'level3IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS Red',
+                page: 4,
+              }),
+            },
+          ])
+        );
+      });
+
+      it('is a noop for unset pages of nested indices when the state changes', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const level2 = index({ indexName: 'level2IndexName' });
+        const level3 = index({ indexName: 'level3IndexName' });
+        const searchClient = createSearchClient();
+        const mainHelper = algoliasearchHelper(searchClient, '', {});
+        const instantSearchInstance = createInstantSearch({
+          mainHelper,
+        });
+
+        level0.addWidgets([
+          createConfigure({
+            hitsPerPage: 5,
+          }),
+
+          createSearchBox({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('query', 'Apple');
+            },
+          }),
+
+          createPagination({
+            getWidgetSearchParameters(searchParameters) {
+              return searchParameters.setQueryParameter('page', 1);
+            },
+          }),
+
+          level1.addWidgets([
+            createSearchBox({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter(
+                  'query',
+                  'Apple iPhone'
+                );
+              },
+            }),
+
+            createPagination({
+              getWidgetSearchParameters(searchParameters) {
+                return searchParameters.setQueryParameter('page', 2);
+              },
+            }),
+
+            level2.addWidgets([
+              createSearchBox({
+                getWidgetSearchParameters(searchParameters) {
+                  return searchParameters.setQueryParameter(
+                    'query',
+                    'Apple iPhone XS'
+                  );
+                },
+              }),
+
+              level3.addWidgets([
+                createSearchBox({
+                  getWidgetSearchParameters(searchParameters) {
+                    return searchParameters.setQueryParameter(
+                      'query',
+                      'Apple iPhone XS Red'
+                    );
+                  },
+                }),
+              ]),
+            ]),
+          ]),
+        ]);
+
+        level0.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        level1.getHelper()!.setQuery('Hey').search();
+
+        expect(searchClient.search).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            {
+              indexName: 'level0IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple',
+                page: 1,
+              }),
+            },
+            {
+              indexName: 'level1IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Hey',
+                page: 0,
+              }),
+            },
+            {
+              indexName: 'level2IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS',
+                page: 0,
+              }),
+            },
+            {
+              indexName: 'level3IndexName',
+              params: expect.objectContaining({
+                hitsPerPage: 5,
+                query: 'Apple iPhone XS Red',
+                page: 0,
+              }),
+            },
+          ])
+        );
+      });
+    });
+
+    describe('with uiState', () => {
+      it('uses `indexId` for scope key', () => {
+        const instance = index({ indexName: 'indexName', indexId: 'indexId' });
+        const widgets = [virtualSearchBox({}), virtualPagination({})];
+
+        instance.addWidgets(widgets);
+
+        instance.init(createIndexInitOptions({ parent: null }));
+
+        // Simulate a state change
+        instance
+          .getHelper()!
+          .setQueryParameter('query', 'Apple')
+          .setQueryParameter('page', 5);
+
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexId: {
+            query: 'Apple',
+            page: 6,
+          },
+        });
+      });
+
+      it('uses the provided `uiState` for the local `uiState`', () => {
+        const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+        const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+
+        topLevelInstance.addWidgets([subLevelInstance]);
+
+        topLevelInstance.init(
+          createIndexInitOptions({
+            parent: null,
+            uiState: {
+              topLevelIndexName: {
+                configure: {
+                  hitsPerPage: 5,
+                },
+                refinementList: {
+                  brand: ['Apple'],
+                },
+              },
+              subLevelIndexName: {
+                configure: {
+                  hitsPerPage: 2,
+                },
+                menu: {
+                  categories: 'Phone',
+                },
+                refinementList: {
+                  brand: ['Samsung'],
+                },
+              },
+            },
+          })
+        );
+
+        expect(topLevelInstance.getWidgetUiState({})).toEqual({
+          topLevelIndexName: {
+            configure: {
+              hitsPerPage: 5,
+            },
+            refinementList: {
+              brand: ['Apple'],
+            },
+          },
+          subLevelIndexName: {
+            configure: {
+              hitsPerPage: 2,
+            },
+            menu: {
+              categories: 'Phone',
+            },
+            refinementList: {
+              brand: ['Samsung'],
+            },
+          },
+        });
+      });
+
+      it('updates the local `uiState` when the state changes', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+        const widgets = [virtualSearchBox({}), virtualPagination({})];
+
+        instance.addWidgets(widgets);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        // Simulate a state change
+        instance
+          .getHelper()!
+          .setQueryParameter('query', 'Apple')
+          .setQueryParameter('page', 5);
+
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: {
+            query: 'Apple',
+            page: 6,
+          },
+        });
+
+        // `instantSearchInstance` must have been notified 2 times of the `uiState` changes:
+        // 1. By the helper `change` event callback, for the 1st change to the query parameters
+        // 2. By the helper `change` event callback, for the 2nd change to the query parameters
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).toHaveBeenCalledTimes(2);
+      });
+
+      it('does not update the local `uiState` on state changes in `init`', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch();
+
+        const widgets = [
+          virtualSearchBox({}),
+          virtualPagination({}),
+          createWidget({
+            init({ helper }) {
+              helper
+                .setQueryParameter('query', 'Apple iPhone')
+                .setQueryParameter('page', 5);
+            },
+          }),
+        ];
+
+        instance.addWidgets(widgets);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instance.getHelper()!.state).toEqual(
+          new SearchParameters({
+            index: 'indexName',
+            query: 'Apple iPhone',
+            page: 5,
+          })
+        );
+
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: {},
+        });
+
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).not.toHaveBeenCalled();
+      });
+
+      it('updates the local `uiState` only with widgets', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const widgets = [virtualSearchBox({}), virtualPagination({})];
+        widgets.forEach((widget) => jest.spyOn(widget, 'getWidgetUiState'));
+
+        jest.spyOn(level1, 'getWidgetUiState');
+
+        level0.addWidgets([...widgets, level1]);
+
+        level0.init(createIndexInitOptions({ parent: null }));
+
+        // Simulate a state change
+        level0
+          .getHelper()!
+          .setQueryParameter('query', 'Apple')
+          .setQueryParameter('page', 5);
+
+        widgets.forEach((widget) => {
+          expect(widget.getWidgetUiState).toHaveBeenCalledTimes(2); // 2 changes
+        });
+
+        expect(level1.getWidgetUiState).toHaveBeenCalledTimes(0);
+      });
+
+      it('updates the local `uiState` when they differ on first render', () => {
+        const instance = index({ indexName: 'indexName' });
+        const instantSearchInstance = createInstantSearch({
+          onInternalStateChange: jest.fn() as any,
+        });
+
+        instance.addWidgets([virtualSearchBox({})]);
+
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: {},
+        });
+
+        // Simulate a change
+        instance.getHelper()!.setState({
+          ...instance.getHelper()!.state,
+          query: 'Apple iPhone',
+        });
+
+        instance.render({
+          instantSearchInstance,
+        });
+
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).toHaveBeenCalledTimes(1);
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: {
+            query: 'Apple iPhone',
+          },
+        });
+
+        // Simulate a change
+        instance.getHelper()!.setState({
+          ...instance.getHelper()!.state,
+          query: 'Apple iPhone XS',
+        });
+
+        instance.render({
+          instantSearchInstance,
+        });
+
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).toHaveBeenCalledTimes(2);
+        expect(instance.getWidgetUiState({})).toEqual({
+          indexName: {
+            query: 'Apple iPhone XS',
+          },
+        });
+      });
+
+      it('does not update the local `uiState` on first render for children indices', async () => {
+        const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+        const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+        const instantSearchInstance = createInstantSearch({
+          onInternalStateChange: jest.fn() as any,
+        });
+
+        topLevelInstance.addWidgets([
+          virtualSearchBox({}),
+          subLevelInstance.addWidgets([virtualSearchBox({})]),
+        ]);
+
+        topLevelInstance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+
+        expect(subLevelInstance.getWidgetUiState({})).toEqual({
+          subLevelIndexName: {},
+        });
+
+        subLevelInstance
+          .getHelper()!
+          // Simulate a change that does not emit (like `searchFunction`)
+          .overrideStateWithoutTriggeringChangeEvent({
+            ...subLevelInstance.getHelper()!.state,
+            query: 'Apple iPhone',
+          })
+          // Simulate a call to search from a widget - this step is required otherwise
+          // the DerivedHelper does not contain the results. The `lastResults` attribute
+          // is set once the `result` event is emitted.
+          .search();
+
+        await wait(0);
+
+        topLevelInstance.render({
+          instantSearchInstance,
+        });
+
+        expect(
+          instantSearchInstance.onInternalStateChange
+        ).not.toHaveBeenCalled();
+        expect(subLevelInstance.getWidgetUiState({})).toEqual({
+          subLevelIndexName: {},
+        });
+      });
+
+      it('retrieves the `uiState` for the children indices', () => {
+        const level0 = index({ indexName: 'level0IndexName' });
+        const level1 = index({ indexName: 'level1IndexName' });
+        const level2 = index({ indexName: 'level2IndexName' });
+        const level3 = index({ indexName: 'level3IndexName' });
+
+        level0.addWidgets([
+          virtualSearchBox({}),
+          virtualPagination({}),
+
+          level1.addWidgets([
+            virtualSearchBox({}),
+            virtualPagination({}),
+
+            level2.addWidgets([
+              virtualSearchBox({}),
+              virtualPagination({}),
+              level3,
+            ]),
+          ]),
+        ]);
+
+        level0.init(createIndexInitOptions({ parent: null }));
+
+        // Simulate a state change
+        level0
+          .getHelper()!
+          .setQueryParameter('query', 'Apple')
+          .setQueryParameter('page', 5);
+
+        level1
+          .getHelper()!
+          .setQueryParameter('query', 'Apple iPhone')
+          .setQueryParameter('page', 7);
+
+        level2
+          .getHelper()!
+          .setQueryParameter('query', 'Apple iPhone 5S')
+          .setQueryParameter('page', 9);
+
+        expect(level0.getWidgetUiState({})).toEqual({
+          level0IndexName: {
+            query: 'Apple',
+            page: 6,
+          },
+          level1IndexName: {
+            query: 'Apple iPhone',
+            page: 8,
+          },
+          level2IndexName: {
+            query: 'Apple iPhone 5S',
+            page: 10,
+          },
+          level3IndexName: {},
+        });
+
+        expect(level1.getWidgetUiState({})).toEqual({
+          level1IndexName: {
+            query: 'Apple iPhone',
+            page: 8,
+          },
+          level2IndexName: {
+            query: 'Apple iPhone 5S',
+            page: 10,
+          },
+          level3IndexName: {},
+        });
+
+        expect(level2.getWidgetUiState({})).toEqual({
+          level2IndexName: {
+            query: 'Apple iPhone 5S',
+            page: 10,
+          },
+          level3IndexName: {},
+        });
+
+        expect(level3.getWidgetUiState({})).toEqual({
+          level3IndexName: {},
+        });
+      });
+    });
+
+    it('uiState on inner index does not get erased on addWidget', () => {
+      const level0 = index({ indexName: 'level0IndexName' });
+
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+        _initialUiState: {
+          level0IndexName: {
+            query: 'something',
+          },
+        },
+      });
+
+      instantSearchInstance.mainIndex.init(
+        createIndexInitOptions({ instantSearchInstance, parent: null })
+      );
+
+      instantSearchInstance.mainIndex.addWidgets([level0]);
+
+      level0.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: instantSearchInstance.mainIndex,
+        })
+      );
+
+      level0.addWidgets([
+        createConfigure({
+          distinct: false,
+        }),
+      ]);
+
+      level0.addWidgets([virtualSearchBox({})]);
+
+      expect(level0.getHelper()!.state.query).toBe('something');
+
+      expect(instantSearchInstance.mainIndex.getWidgetUiState({})).toEqual({
+        indexName: {},
+        level0IndexName: {
+          configure: {
+            distinct: false,
+          },
+          query: 'something',
+        },
+      });
+    });
+
+    test('stores the render state on the instance', () => {
+      expect.assertions(2);
+
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      const searchIndex1 = index({ indexName: 'indexName1' });
+      const searchBoxRefine = jest.fn();
+      const searchBoxClear = jest.fn();
+      const paginationRefine = jest.fn();
+      const paginationCreateURL = jest.fn();
+
+      const searchBox = createSearchBox({
+        dependsOn: 'search',
+        getRenderState: jest.fn((renderState, { helper, searchMetadata }) => {
+          return {
+            ...renderState,
+            searchBox: {
+              query: helper.state.query || '',
+              refine: searchBoxRefine,
+              clear: searchBoxClear,
+              isSearchStalled: searchMetadata.isSearchStalled,
+              widgetParams: {},
+            },
+          };
+        }),
+      });
+      const pagination = createPagination({
+        getRenderState: jest.fn((renderState) => {
+          return {
+            ...renderState,
+            pagination: {
+              refine: paginationRefine,
+              canRefine: false,
+              createURL: paginationCreateURL,
+              isFirstPage: true,
+              isLastPage: true,
+              currentRefinement: 0,
+              nbHits: 0,
+              nbPages: 0,
+              pages: [],
+              widgetParams: {},
+            },
+          };
+        }),
+      });
+      const renderStateWidget = createWidget({
+        init({ renderState }) {
+          expect(renderState).toEqual({
+            indexName: {
+              searchBox: {
+                query: '',
+                refine: searchBoxRefine,
+                clear: searchBoxClear,
+                isSearchStalled: false,
+                widgetParams: {},
+              },
+            },
+            indexName1: {
+              searchBox: {
+                query: '',
+                refine: searchBoxRefine,
+                clear: searchBoxClear,
+                isSearchStalled: false,
+                widgetParams: {},
+              },
+              pagination: {
+                refine: paginationRefine,
+                canRefine: false,
+                createURL: paginationCreateURL,
+                isFirstPage: true,
+                isLastPage: true,
+                currentRefinement: 0,
+                nbHits: 0,
+                nbPages: 0,
+                pages: [],
+                widgetParams: {},
+              },
+            },
+          });
+        },
+        render({ renderState }) {
+          expect(renderState).toEqual({
+            indexName: {
+              searchBox: {
+                query: '',
+                refine: searchBoxRefine,
+                clear: searchBoxClear,
+                isSearchStalled: false,
+                widgetParams: {},
+              },
+            },
+            indexName1: {
+              searchBox: {
+                query: '',
+                refine: searchBoxRefine,
+                clear: searchBoxClear,
+                isSearchStalled: false,
+                widgetParams: {},
+              },
+              pagination: {
+                refine: paginationRefine,
+                canRefine: false,
+                createURL: paginationCreateURL,
+                isFirstPage: true,
+                isLastPage: true,
+                currentRefinement: 0,
+                nbHits: 0,
+                nbPages: 0,
+                pages: [],
+                widgetParams: {},
+              },
+            },
+          });
+        },
+      });
+
+      search.addWidgets([
+        searchBox,
+        searchIndex1.addWidgets([searchBox, pagination, renderStateWidget]),
+      ]);
+      search.start();
+    });
+
+    test('calls `getRenderState` with the index render state', () => {
+      const searchIndex = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, 'indexName', {});
+      const instantSearchInstance = createInstantSearch({ mainHelper });
+      const searchBox = createSearchBox({
+        dependsOn: 'search',
+        getRenderState: jest.fn((renderState, { helper, searchMetadata }) => {
+          return {
+            ...renderState,
+            searchBox: {
+              query: helper.state.query || '',
+              refine: () => {},
+              clear: () => {},
+              isSearchStalled: searchMetadata.isSearchStalled,
+              widgetParams: {},
+            },
+          };
+        }),
+      });
+      const pagination = createPagination({
+        getRenderState: jest.fn((renderState) => {
+          return {
+            ...renderState,
+            pagination: {
+              refine: () => {},
+              canRefine: false,
+              createURL: () => '',
+              isFirstPage: true,
+              isLastPage: true,
+              currentRefinement: 0,
+              nbHits: 0,
+              nbPages: 0,
+              pages: [],
+              widgetParams: {},
+            },
+          };
+        }),
+      });
+
+      searchIndex.addWidgets([searchBox, pagination]);
+
+      searchIndex.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      expect(searchBox.getRenderState).toHaveBeenCalledTimes(1);
+      expect(searchBox.getRenderState).toHaveBeenCalledWith(
+        {},
+        expect.objectContaining({
+          uiState: {},
+          helper: expect.anything(),
+          state: expect.anything(),
+          parent: expect.anything(),
+          instantSearchInstance,
+          renderState: expect.anything(),
+          templatesConfig: instantSearchInstance.templatesConfig,
+          createURL: expect.any(Function),
+          scopedResults: [],
+          status: instantSearchInstance.status,
+          searchMetadata: {
+            isSearchStalled: instantSearchInstance.status === 'stalled',
+          },
+        })
+      );
+
+      expect(pagination.getRenderState).toHaveBeenCalledTimes(1);
+      expect(pagination.getRenderState).toHaveBeenCalledWith(
+        {
+          searchBox: {
+            clear: expect.any(Function),
+            isSearchStalled: instantSearchInstance.status === 'stalled',
+            query: '',
+            refine: expect.any(Function),
+            widgetParams: {},
+          },
+        },
+        expect.anything()
+      );
+    });
+
+    describe('multiple init calls', () => {
+      it('does not recreate helper', () => {
+        const instance = index({ indexName: 'test' });
+
+        expect(instance.getHelper()).toBe(null);
+
+        instance.init(createIndexInitOptions());
+
+        const helper1 = instance.getHelper()!;
+
+        instance.init(createIndexInitOptions());
+
+        const helper2 = instance.getHelper()!;
+
+        expect(helper1).toBe(helper2);
+      });
+
+      it('does not listen on change again multiple times', () => {
+        const instance = index({ indexName: 'test' });
+
+        expect(instance.getHelper()).toBe(null);
+
+        instance.init(createIndexInitOptions());
+
+        const helper = instance.getHelper()!;
+
+        expect(helper.listenerCount('change')).toBe(2);
+
+        instance.init(createIndexInitOptions());
+
+        expect(helper.listenerCount('change')).toBe(2);
+      });
+
+      it('derives only once', () => {
+        const instance = index({ indexName: 'test' });
+
+        const mainHelper = algoliasearchHelper(createSearchClient(), '');
+
+        const instantSearchInstance = createInstantSearch({ mainHelper });
+
+        expect(instance.getHelper()).toBe(null);
+
+        instance.init(createIndexInitOptions({ instantSearchInstance }));
+
+        expect(mainHelper.derivedHelpers.length).toBe(1);
+
+        instance.init(createIndexInitOptions({ instantSearchInstance }));
+
+        expect(mainHelper.derivedHelpers.length).toBe(1);
+      });
+    });
+  });
+
+  describe('render', () => {
+    it('calls `render` on its widgets', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+
+      const widgets = [virtualSearchBox({}), virtualPagination({})];
+      widgets.forEach((widget) => jest.spyOn(widget, 'render'));
+
+      instance.addWidgets(widgets);
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(0);
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Simulate a call to search from a widget - this step is required otherwise
+      // the DerivedHelper does not contain the results. The `lastResults` attribute
+      // is set once the `result` event is emitted.
+      instance.getHelper()!.search();
+
+      await wait(0);
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(0);
+      });
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(1);
+        expect(widget.render).toHaveBeenCalledWith({
+          instantSearchInstance,
+          parent: instance,
+          results: expect.any(algoliasearchHelper.SearchResults),
+          scopedResults: [
+            {
+              indexId: 'indexName',
+              results: expect.any(Object),
+              helper: instance.getHelper(),
+            },
+          ],
+          state: expect.any(algoliasearchHelper.SearchParameters),
+          renderState: expect.any(Object),
+          helper: instance.getHelper(),
+          templatesConfig: instantSearchInstance.templatesConfig,
+          createURL: expect.any(Function),
+          status: instantSearchInstance.status,
+          searchMetadata: {
+            isSearchStalled: instantSearchInstance.status === 'stalled',
+          },
+        });
+      });
+    });
+
+    it('calls `render` when `shouldRender` is undefined', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+
+      const fbt = createFrequentlyBoughtTogether({ shouldRender: undefined });
+      instance.addWidgets([fbt]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+      instance.getHelper()!.search();
+      await wait(0);
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      expect(fbt.render).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls `render` when `shouldRender` returns true', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+
+      const fbt = createFrequentlyBoughtTogether({ shouldRender: () => true });
+      instance.addWidgets([fbt]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+      instance.getHelper()!.search();
+      await wait(0);
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      expect(fbt.render).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not call `render` when `shouldRender` returns false', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+
+      const fbt = createFrequentlyBoughtTogether({ shouldRender: () => false });
+      instance.addWidgets([fbt]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+      instance.getHelper()!.search();
+      await wait(0);
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      expect(fbt.render).toHaveBeenCalledTimes(0);
+    });
+
+    it('calls render on widgets with shouldRender, even if there are no results', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+
+      const fbt = createFrequentlyBoughtTogether({ shouldRender: () => true });
+      const searchBox = virtualSearchBox({});
+      jest.spyOn(searchBox, 'render');
+      const child = index({ indexName: 'childIndexName' });
+      jest.spyOn(child, 'render');
+      instance.addWidgets([fbt, searchBox, child]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      expect(fbt.render).toHaveBeenCalledTimes(1);
+      expect(searchBox.render).toHaveBeenCalledTimes(0);
+      expect(child.render).toHaveBeenCalledTimes(1);
+    });
+
+    // https://github.com/algolia/instantsearch/pull/2623
+    it('does not call `render` without `lastResults`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      const widgets = [virtualSearchBox({}), virtualPagination({})];
+      widgets.forEach((widget) => jest.spyOn(widget, 'render'));
+
+      instance.addWidgets(widgets);
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(0);
+      });
+
+      instance.init(createIndexInitOptions({ parent: null }));
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(0);
+      });
+
+      instance.render({ instantSearchInstance: createInstantSearch() });
+
+      widgets.forEach((widget) => {
+        expect(widget.render).toHaveBeenCalledTimes(0);
+      });
+    });
+
+    it('calls `render` with `scopedResults` coming from siblings and children', async () => {
+      const level0 = index({ indexName: 'level0IndexName' });
+      const level1 = index({ indexName: 'level1IndexName' });
+      const level2 = index({ indexName: 'level2IndexName' });
+      const level21 = index({ indexName: 'level21IndexName' });
+      const level22 = index({ indexName: 'level22IndexName' });
+      const level221 = index({ indexName: 'level221IndexName' });
+      const level3 = index({ indexName: 'level3IndexName' });
+      const searchBoxLevel0 = virtualSearchBox({});
+      jest.spyOn(searchBoxLevel0, 'render');
+      const searchBoxLevel1 = virtualSearchBox({});
+      jest.spyOn(searchBoxLevel1, 'render');
+      const searchBoxLevel21 = virtualSearchBox({});
+      jest.spyOn(searchBoxLevel21, 'render');
+
+      level0.addWidgets([
+        searchBoxLevel0,
+        level1.addWidgets([searchBoxLevel1]),
+        level2.addWidgets([
+          virtualSearchBox({}),
+          level21.addWidgets([searchBoxLevel21]),
+          level22.addWidgets([
+            virtualSearchBox({}),
+            level221.addWidgets([virtualSearchBox({})]),
+          ]),
+        ]),
+        level3.addWidgets([virtualSearchBox({})]),
+      ]);
+
+      level0.init(createIndexInitOptions({ parent: null }));
+
+      // Simulate a call to search from a widget - this step is required otherwise
+      // the DerivedHelper does not contain the results. The `lastResults` attribute
+      // is set once the `result` event is emitted.
+      level0.getHelper()!.search();
+
+      await wait(0);
+
+      level0.render({ instantSearchInstance: createInstantSearch() });
+
+      // First-level child index
+      expect(searchBoxLevel1.render).toHaveBeenCalledTimes(1);
+      expect(searchBoxLevel1.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopedResults: [
+            // Root index
+            {
+              indexId: 'level1IndexName',
+              results: (searchBoxLevel1.render as jest.Mock).mock.calls[0][0]
+                .results,
+              helper: level1.getHelper(),
+            },
+            // Siblings and children
+            {
+              indexId: 'level2IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level2.getHelper(),
+            },
+            {
+              indexId: 'level21IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level21.getHelper(),
+            },
+            {
+              indexId: 'level22IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level22.getHelper(),
+            },
+            {
+              indexId: 'level221IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level221.getHelper(),
+            },
+            {
+              indexId: 'level3IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level3.getHelper(),
+            },
+          ],
+        })
+      );
+
+      // Sibling index
+      expect(searchBoxLevel21.render).toHaveBeenCalledTimes(1);
+      expect(searchBoxLevel21.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopedResults: [
+            // Root index
+            {
+              indexId: 'level21IndexName',
+              results: (searchBoxLevel21.render as jest.Mock).mock.calls[0][0]
+                .results,
+              helper: level21.getHelper(),
+            },
+            // Siblings and children
+            {
+              indexId: 'level22IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level22.getHelper(),
+            },
+            {
+              indexId: 'level221IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level221.getHelper(),
+            },
+          ],
+        })
+      );
+
+      // Top-level index
+      expect(searchBoxLevel0.render).toHaveBeenCalledTimes(1);
+      expect(searchBoxLevel0.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopedResults: [
+            // Root index
+            {
+              indexId: 'level0IndexName',
+              results: (searchBoxLevel0.render as jest.Mock).mock.calls[0][0]
+                .results,
+              helper: level0.getHelper(),
+            },
+            // Siblings and children
+            {
+              indexId: 'level1IndexName',
+              results: (searchBoxLevel1.render as jest.Mock).mock.calls[0][0]
+                .results,
+              helper: level1.getHelper(),
+            },
+            {
+              indexId: 'level2IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level2.getHelper(),
+            },
+            {
+              indexId: 'level21IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level21.getHelper(),
+            },
+            {
+              indexId: 'level22IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level22.getHelper(),
+            },
+            {
+              indexId: 'level221IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level221.getHelper(),
+            },
+            {
+              indexId: 'level3IndexName',
+              results: expect.any(algoliasearchHelper.SearchResults),
+              helper: level3.getHelper(),
+            },
+          ],
+        })
+      );
+    });
+
+    it('forwards recommend results when `dependsOn` is `recommend`', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient({
+        // @ts-ignore partial response
+        getRecommendations: jest.fn(() =>
+          Promise.resolve({
+            results: [{ hits: [{ objectID: '1', title: 'Recommend' }] }],
+          })
+        ),
+      });
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      const fbt = createFrequentlyBoughtTogether({
+        dependsOn: 'recommend',
+        shouldRender: () => true,
+        render: jest.fn(),
+      });
+      instance.addWidgets([fbt]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+      mainHelper.search();
+      await wait(0);
+      mainHelper.recommend();
+      await wait(0);
+
+      instance.render({
+        instantSearchInstance,
+      });
+
+      expect(fbt.render).toHaveBeenCalledWith(
+        expect.objectContaining({
+          results: expect.objectContaining({
+            hits: expect.arrayContaining([
+              { objectID: '1', title: 'Recommend' },
+            ]),
+          }),
+        })
+      );
+    });
+  });
+
+  describe('dispose', () => {
+    it('calls `dispose` on its widgets', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+      const widgets = [virtualSearchBox({}), virtualPagination({})];
+      widgets.forEach((widget) => jest.spyOn(widget, 'dispose'));
+
+      instance.addWidgets(widgets);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      widgets.forEach((widget) => {
+        expect(widget.dispose).toHaveBeenCalledTimes(0);
+      });
+
+      // Save the Helper to be able to simulate the search
+      const helper = instance.getHelper();
+
+      instance.dispose(
+        createDisposeOptions({
+          helper: instantSearchInstance.helper!,
+          state: instantSearchInstance.helper!.state,
+        })
+      );
+
+      widgets.forEach((widget) => {
+        expect(widget.dispose).toHaveBeenCalledTimes(1);
+        expect(widget.dispose).toHaveBeenCalledWith({
+          state: helper!.state,
+          recommendState: helper!.recommendState,
+          helper,
+          parent: instance,
+        });
+      });
+    });
+
+    it('keeps the widgets on the index', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch();
+      const searchBox = virtualSearchBox({});
+      const pagination = virtualPagination({});
+
+      instance.addWidgets([searchBox, pagination]);
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      expect(instance.getWidgets()).toHaveLength(2);
+
+      instance.dispose(createDisposeOptions());
+
+      expect(instance.getWidgets()).toHaveLength(2);
+    });
+
+    it('removes the internal parent', () => {
+      const topLevelInstance = index({ indexName: 'topLevelIndexName' });
+      const subLevelInstance = index({ indexName: 'subLevelIndexName' });
+
+      topLevelInstance.addWidgets([subLevelInstance]);
+
+      topLevelInstance.init(createIndexInitOptions({ parent: null }));
+
+      expect(subLevelInstance.getHelper()).toBeDefined();
+
+      subLevelInstance.dispose(createDisposeOptions());
+
+      expect(subLevelInstance.getHelper()).toBe(null);
+    });
+
+    it('removes the listeners on internal Helper', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchBox = virtualSearchBox({});
+      jest.spyOn(searchBox, 'getWidgetUiState');
+
+      instance.addWidgets([searchBox]);
+
+      instance.init(createIndexInitOptions({ parent: null }));
+
+      // Save the Helper to be able to simulate a change
+      const helper = instance.getHelper()!;
+
+      // Simulate a state change
+      helper.setQueryParameter('query', 'Apple iPhone');
+
+      expect(searchBox.getWidgetUiState).toHaveBeenCalledTimes(1);
+
+      instance.dispose(createDisposeOptions());
+
+      // Simulate a state change
+      helper.setQueryParameter('query', 'Apple iPhone 5S');
+
+      expect(searchBox.getWidgetUiState).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes the internal Helper', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      instance.init(createIndexInitOptions({ parent: null }));
+
+      expect(instance.getHelper()).toBeDefined();
+
+      instance.dispose(createDisposeOptions());
+
+      expect(instance.getHelper()).toBe(null);
+    });
+
+    it('removes the listeners on DerivedHelper', async () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch({
+        scheduleRender: jest.fn() as any,
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      // Save the Helper to be able to simulate the search
+      const helper = instance.getHelper();
+
+      instance.dispose(createDisposeOptions());
+
+      // Simulate a call to search from a widget
+      helper!.search();
+
+      expect(instantSearchInstance.scheduleRender).toHaveBeenCalledTimes(0);
+
+      await wait(0);
+
+      expect(instantSearchInstance.scheduleRender).toHaveBeenCalledTimes(0);
+    });
+
+    it('removes the DerivedHelper', () => {
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      instance.init(
+        createIndexInitOptions({
+          instantSearchInstance,
+          parent: null,
+        })
+      );
+
+      expect(mainHelper.derivedHelpers).toHaveLength(1);
+
+      instance.dispose(createDisposeOptions());
+
+      expect(mainHelper.derivedHelpers).toHaveLength(0);
+    });
+
+    it('does not crash when calling `dispose` before `init`', () => {
+      const instance = index({ indexName: 'indexName' });
+
+      instance.addWidgets([virtualSearchBox({})]);
+
+      expect(() => {
+        instance.dispose(createDisposeOptions());
+      }).not.toThrow();
+    });
+  });
+
+  describe('getWidgetState', () => {
+    test('warns when index has this method', () => {
+      warning.cache = {};
+
+      const instance = index({ indexName: 'indexName' });
+
+      expect(() => {
+        instance.getWidgetState({});
+      }).toWarnDev(
+        '[InstantSearch.js]: The `getWidgetState` method is renamed `getWidgetUiState` and will no longer exist under that name in InstantSearch.js 5.x. Please use `getWidgetUiState` instead.'
+      );
+    });
+
+    test('warns when widget has this method', () => {
+      warning.cache = {};
+
+      const createDeprecatedSearchBox = (args: Partial<Widget> = {}): Widget =>
+        createWidget({
+          dispose: jest.fn(({ state }) => {
+            return state.setQueryParameter('query', undefined);
+          }),
+          getWidgetState: jest.fn((uiState, { searchParameters }) => {
+            if (!searchParameters.query) {
+              return uiState;
+            }
+
+            return {
+              ...uiState,
+              query: searchParameters.query,
+            };
+          }),
+          getWidgetSearchParameters: jest.fn(
+            (searchParameters, { uiState }) => {
+              return searchParameters.setQueryParameter(
+                'query',
+                uiState.query || ''
+              );
+            }
+          ),
+          ...args,
+        });
+
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      instance.addWidgets([createDeprecatedSearchBox()]);
+
+      expect(() => {
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+      }).toWarnDev(
+        '[InstantSearch.js]: The `getWidgetState` method is renamed `getWidgetUiState` and will no longer exist under that name in InstantSearch.js 5.x. Please use `getWidgetUiState` instead.'
+      );
+    });
+
+    test('does not warn for index itself', () => {
+      warning.cache = {};
+
+      const instance = index({ indexName: 'indexName' });
+      const searchClient = createSearchClient();
+      const mainHelper = algoliasearchHelper(searchClient, '', {});
+      const instantSearchInstance = createInstantSearch({
+        mainHelper,
+      });
+
+      instance.addWidgets([index({ indexName: 'other' })]);
+
+      expect(() => {
+        instance.init(
+          createIndexInitOptions({
+            instantSearchInstance,
+            parent: null,
+          })
+        );
+      }).not.toWarnDev(
+        '[InstantSearch.js]: The `getWidgetState` method is renamed `getWidgetUiState` and will no longer exist under that name in InstantSearch.js 5.x. Please use `getWidgetUiState` instead.'
+      );
+    });
+  });
+
+  describe('getWidgetUiState', () => {
+    it('returns the index UI state of its widgets', () => {
+      const instance = index({ indexName: 'instance' });
+      const search = instantsearch({
+        indexName: 'root',
+        searchClient: createSearchClient(),
+      });
+      search.start();
+      search.addWidgets([instance.addWidgets([virtualSearchBox({})])]);
+
+      search.renderState.instance.searchBox!.refine('hello');
+
+      expect(instance.getWidgetUiState({})).toEqual({
+        instance: {
+          query: 'hello',
+        },
+      });
+    });
+
+    it('returns the index of its widgets and child indexes', () => {
+      const instance = index({ indexName: 'instance' });
+      const search = instantsearch({
+        indexName: 'root',
+        searchClient: createSearchClient(),
+      });
+      search.start();
+      search.addWidgets([
+        instance.addWidgets([
+          virtualSearchBox({}),
+          index({ indexName: 'childInstance' }).addWidgets([
+            virtualPagination({}),
+          ]),
+        ]),
+      ]);
+
+      search.renderState.instance.searchBox!.refine('hello');
+      search.renderState.childInstance.pagination!.refine(2);
+
+      expect(instance.getWidgetUiState({})).toEqual({
+        childInstance: {
+          page: 3,
+        },
+        instance: {
+          query: 'hello',
+        },
+      });
+    });
+
+    it('does not include isolated child indexes', () => {
+      const instance = index({ indexName: 'instance' });
+      const search = instantsearch({
+        indexName: 'root',
+        searchClient: createSearchClient(),
+      });
+      search.start();
+      search.addWidgets([
+        instance.addWidgets([
+          virtualSearchBox({}),
+          index({
+            indexName: 'childInstance',
+            isolated: true,
+          }).addWidgets([virtualPagination({})]),
+        ]),
+      ]);
+
+      search.renderState.instance.searchBox!.refine('hello');
+      search.renderState.childInstance.pagination!.refine(2);
+
+      expect(instance.getWidgetUiState({})).toEqual({
+        instance: {
+          query: 'hello',
+        },
+      });
+    });
+  });
+
+  describe('setIndexUiState', () => {
+    it('updates main UI state with an object', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = instantsearch({
+        indexName: 'root',
+        searchClient: createSearchClient(),
+      });
+      instantSearchInstance.start();
+      instantSearchInstance.addWidgets([
+        instance.addWidgets([virtualSearchBox({})]),
+      ]);
+
+      instance.setIndexUiState({
+        query: 'iphone',
+      });
+
+      expect(instantSearchInstance.getUiState()).toEqual({
+        root: {},
+        indexName: {
+          query: 'iphone',
+        },
+      });
+    });
+
+    it('updates main UI state with a function', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = instantsearch({
+        indexName: 'root',
+        searchClient: createSearchClient(),
+      });
+      instantSearchInstance.start();
+      instantSearchInstance.addWidgets([
+        instance.addWidgets([virtualPagination({})]),
+      ]);
+      instance.setIndexUiState((uiState) => ({
+        page: (uiState.page || 1) + 1,
+      }));
+
+      expect(instantSearchInstance.getUiState()).toEqual({
+        root: {},
+        indexName: {
+          page: 2,
+        },
+      });
+
+      instance.setIndexUiState((uiState) => ({
+        page: (uiState.page || 1) + 1,
+      }));
+
+      expect(instantSearchInstance.getUiState()).toEqual({
+        root: {},
+        indexName: {
+          page: 3,
+        },
+      });
+    });
+  });
+
+  describe('with initial results', () => {
+    it('injects the results to the index helper', () => {
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      search._initialResults = {
+        indexName: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            }),
+          ],
+        },
+      };
+
+      search.start();
+
+      const expectedResults = {
+        _rawResults: [
+          {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            hitsPerPage: 20,
+            nbHits: 3,
+            nbPages: 1,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: 'iphone',
+          },
+        ],
+        _state: {
+          index: 'indexName',
+          disjunctiveFacets: [],
+          disjunctiveFacetsRefinements: {},
+          facets: [],
+          facetsExcludes: {},
+          facetsRefinements: {},
+          hierarchicalFacets: [],
+          hierarchicalFacetsRefinements: {},
+          numericRefinements: {},
+          tagRefinements: [],
+        },
+        disjunctiveFacets: [],
+        exhaustiveFacetsCount: true,
+        exhaustiveNbHits: true,
+        facets: [],
+        hierarchicalFacets: [],
+        hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+        hitsPerPage: 20,
+        nbHits: 3,
+        nbPages: 1,
+        page: 0,
+        params: '',
+        persistHierarchicalRootCount: false,
+        processingTimeMS: 0,
+        query: 'iphone',
+      };
+
+      const helperResults = search.mainIndex.getHelper()!.lastResults;
+      const derivedHelperResults = search.mainIndex.getResults();
+
+      expect(derivedHelperResults).toEqual(expectedResults);
+      expect(derivedHelperResults).toBeInstanceOf(SearchResults);
+      expect(helperResults).toEqual(expectedResults);
+      expect(helperResults).toBeInstanceOf(SearchResults);
+    });
+
+    it('injects recommend results to the index helper', () => {
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      search._initialResults = {
+        indexName: {
+          recommendResults: {
+            params: [{ $$id: 0, objectID: '1' }],
+            results: {
+              0: createSingleRecommendResponse({
+                hits: [{ objectID: '1', _score: 0 }],
+              }),
+            },
+          },
+        },
+      };
+
+      search.start();
+
+      const expectedResults = {
+        _rawResults: {
+          0: {
+            exhaustiveFacetsCount: true,
+            exhaustiveNbHits: true,
+            hits: [{ objectID: '1', _score: 0 }],
+            hitsPerPage: 20,
+            nbHits: 1,
+            nbPages: 1,
+            page: 0,
+            params: '',
+            processingTimeMS: 0,
+            query: '',
+          },
+        },
+        _state: {
+          params: [{ $$id: 0, objectID: '1' }],
+        },
+        0: {
+          exhaustiveFacetsCount: true,
+          exhaustiveNbHits: true,
+          hits: [{ objectID: '1', _score: 0 }],
+          hitsPerPage: 20,
+          nbHits: 1,
+          nbPages: 1,
+          page: 0,
+          params: '',
+          processingTimeMS: 0,
+          query: '',
+        },
+      };
+
+      const helperResults = search.mainIndex.getHelper()!.lastRecommendResults;
+
+      expect(helperResults).toEqual(expectedResults);
+      expect(helperResults).toBeInstanceOf(RecommendResults);
+    });
+
+    it('supports nested indices', () => {
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      search._initialResults = {
+        indexName: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            }),
+          ],
+        },
+        indexName2: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '4' }, { objectID: '5' }, { objectID: '6' }],
+            }),
+          ],
+        },
+        indexName3: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+            }),
+          ],
+        },
+      };
+
+      const nestedIndex1 = index({ indexName: 'indexName2' });
+      const nestedIndex2 = index({ indexName: 'indexName3' });
+
+      nestedIndex1.addWidgets([nestedIndex2]);
+      search.addWidgets([nestedIndex1]);
+      search.start();
+
+      const indexExpectedResults = expect.objectContaining({
+        _rawResults: [
+          expect.objectContaining({
+            hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+          }),
+        ],
+        hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+      });
+      const nestedIndex1ExpectedResults = expect.objectContaining({
+        _rawResults: [
+          expect.objectContaining({
+            hits: [{ objectID: '4' }, { objectID: '5' }, { objectID: '6' }],
+          }),
+        ],
+        hits: [{ objectID: '4' }, { objectID: '5' }, { objectID: '6' }],
+      });
+      const nestedIndex2ExpectedResults = expect.objectContaining({
+        _rawResults: [
+          expect.objectContaining({
+            hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+          }),
+        ],
+        hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+      });
+
+      expect(search.mainIndex.getHelper()!.lastResults).toEqual(
+        indexExpectedResults
+      );
+      expect(search.mainIndex.getResults()).toEqual(indexExpectedResults);
+      expect(nestedIndex1.getHelper()!.lastResults).toEqual(
+        nestedIndex1ExpectedResults
+      );
+      expect(nestedIndex1.getResults()).toEqual(nestedIndex1ExpectedResults);
+      expect(nestedIndex2.getHelper()!.lastResults).toEqual(
+        nestedIndex2ExpectedResults
+      );
+      expect(nestedIndex2.getResults()).toEqual(nestedIndex2ExpectedResults);
+    });
+
+    it('does not fail with non-provided index results', () => {
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      search._initialResults = {
+        indexName: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            }),
+          ],
+        },
+        // Notice that `indexName2` is not provided
+        indexName3: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+            }),
+          ],
+        },
+      };
+
+      const nestedIndex1 = index({ indexName: 'indexName2' });
+      const nestedIndex2 = index({ indexName: 'indexName3' });
+
+      nestedIndex1.addWidgets([nestedIndex2]);
+      search.addWidgets([nestedIndex1]);
+      search.start();
+
+      const indexExpectedResults = expect.objectContaining({
+        _rawResults: [
+          expect.objectContaining({
+            hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+          }),
+        ],
+        hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+      });
+      const nestedIndex1ExpectedResults = null;
+      const nestedIndex2ExpectedResults = expect.objectContaining({
+        _rawResults: [
+          expect.objectContaining({
+            hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+          }),
+        ],
+        hits: [{ objectID: '7' }, { objectID: '8' }, { objectID: '9' }],
+      });
+
+      expect(search.mainIndex.getHelper()!.lastResults).toEqual(
+        indexExpectedResults
+      );
+      expect(search.mainIndex.getResults()).toEqual(indexExpectedResults);
+      expect(nestedIndex1.getHelper()!.lastResults).toEqual(
+        nestedIndex1ExpectedResults
+      );
+      expect(nestedIndex1.getResults()).toEqual(nestedIndex1ExpectedResults);
+      expect(nestedIndex2.getHelper()!.lastResults).toEqual(
+        nestedIndex2ExpectedResults
+      );
+      expect(nestedIndex2.getResults()).toEqual(nestedIndex2ExpectedResults);
+    });
+
+    it('schedules a render after init', () => {
+      const instance = index({ indexName: 'indexName' });
+      const instantSearchInstance = createInstantSearch({
+        scheduleRender: jest.fn() as any,
+      });
+      instantSearchInstance._initialResults = {
+        indexName: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            }),
+          ],
+        },
+      };
+
+      instance.init(
+        createIndexInitOptions({ instantSearchInstance, parent: null })
+      );
+
+      expect(instantSearchInstance.scheduleRender).toHaveBeenCalledTimes(1);
+    });
+
+    it('renders the hits coming from the initial results', async () => {
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient: createSearchClient(),
+      });
+      search._initialResults = {
+        indexName: {
+          state: new SearchParameters(),
+          results: [
+            createSingleSearchResponse({
+              query: 'iphone',
+              hits: [{ objectID: '1' }, { objectID: '2' }, { objectID: '3' }],
+            }),
+          ],
+        },
+      };
+      const renderFn = jest.fn();
+
+      const customHits = connectHits(renderFn);
+
+      search.addWidgets([customHits({})]);
+      search.start();
+      await wait(0);
+
+      const receivedHits = renderFn.mock.calls[1][0].hits;
+      expect(receivedHits).toEqual([
+        expect.objectContaining({ objectID: '1' }),
+        expect.objectContaining({ objectID: '2' }),
+        expect.objectContaining({ objectID: '3' }),
+      ]);
+    });
+  });
+
+  describe('isolated', () => {
+    it('sets _isolated to true when isolated option is true', () => {
+      const instance = index({ isolated: true });
+      expect(instance._isolated).toBe(true);
+      expect(instance.getParent()).toBeNull();
+    });
+
+    it('supports the deprecated `EXPERIMENTAL_isolated` alias with a warning', () => {
+      warning.cache = {};
+      expect(() => {
+        const instance = index({ EXPERIMENTAL_isolated: true });
+        expect(instance._isolated).toBe(true);
+        expect(instance.getParent()).toBeNull();
+      }).toWarnDev(
+        '[InstantSearch.js]: The `EXPERIMENTAL_isolated` option is no longer experimental and has been renamed. Please use `isolated` instead.'
+      );
+    });
+
+    it('sets _isolated to false when isolated option is false or omitted', () => {
+      const instance = index({ indexName: 'indexName' });
+      expect(instance._isolated).toBe(false);
+    });
+
+    it('returns correct parent for non-isolated indices', () => {
+      const parent = index({ indexName: 'parentIndex' });
+      const child = index({ indexName: 'childIndex' });
+      parent.addWidgets([child]);
+      child.init(createIndexInitOptions({ parent }));
+      expect(child.getParent()).toBe(parent);
+    });
+
+    it('returns null parent for isolated indices', () => {
+      const parent = index({ indexName: 'parentIndex' });
+      const child = index({ isolated: true });
+      parent.addWidgets([child]);
+      child.init(createIndexInitOptions({ parent }));
+      expect(child.getParent()).toBeNull();
+    });
+
+    it('does not search by default when isolated', async () => {
+      const search = instantsearch({
+        searchClient: createSearchClient(),
+      }).addWidgets([
+        index({ isolated: true }).addWidgets([virtualSearchBox({})]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search._hasSearchWidget).toBe(false);
+      expect(search.status).toBe('idle');
+      expect(search.client.search).toHaveBeenCalledTimes(0);
+    });
+
+    it('searches by default when not isolated', async () => {
+      const search = instantsearch({
+        searchClient: createSearchClient(),
+      }).addWidgets([
+        index({ isolated: false, indexName: 'a' }).addWidgets([
+          virtualSearchBox({}),
+        ]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search.client.search).toHaveBeenCalledTimes(1);
+      expect(castToJestMock(search.client.search).mock.calls[0][0])
+        .toMatchInlineSnapshot(`
+        [
+          {
+            "indexName": "a",
+            "params": {
+              "query": "",
+            },
+          },
+        ]
+      `);
+    });
+
+    it('searches on refine while isolated', async () => {
+      const search = instantsearch({
+        searchClient: createSearchClient(),
+      }).addWidgets([
+        index({ isolated: true, indexName: 'a' }).addWidgets([
+          virtualSearchBox({}),
+        ]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search.client.search).toHaveBeenCalledTimes(0);
+
+      search.renderState.a.searchBox?.refine('please search now');
+
+      expect(search.client.search).toHaveBeenCalledTimes(1);
+      expect(castToJestMock(search.client.search).mock.calls[0][0])
+        .toMatchInlineSnapshot(`
+        [
+          {
+            "indexName": "a",
+            "params": {
+              "query": "please search now",
+            },
+          },
+        ]
+      `);
+    });
+
+    it('searches on refine of a child while isolated', async () => {
+      const search = instantsearch({
+        searchClient: createSearchClient(),
+      }).addWidgets([
+        index({ isolated: true }).addWidgets([
+          index({ indexName: 'a' }),
+          virtualSearchBox({}),
+        ]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search.client.search).toHaveBeenCalledTimes(0);
+
+      search.renderState[''].searchBox?.refine('please search now');
+
+      expect(search.client.search).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not trigger the root composition for an isolated index', async () => {
+      const search = instantsearch({
+        searchClient: createCompositionClient(),
+        compositionID: 'composition-id',
+      }).addWidgets([
+        index({ isolated: true, indexName: 'a' }).addWidgets([
+          virtualSearchBox({}),
+        ]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search.client.search).not.toHaveBeenCalled();
+
+      search.renderState.a.searchBox?.refine('please search now');
+
+      expect(search.client.search).toHaveBeenCalledTimes(1);
+      expect(castToJestMock(search.client.search).mock.calls[0][0])
+        .toMatchInlineSnapshot(`
+        {
+          "compositionID": "a",
+          "requestBody": {
+            "params": {
+              "query": "please search now",
+            },
+          },
+        }
+      `);
+    });
+
+    it('does not trigger composition for an empty isolated index', async () => {
+      const search = instantsearch({
+        searchClient: createCompositionClient(),
+        compositionID: 'composition-id',
+      }).addWidgets([index({ EXPERIMENTAL_isolated: true })]);
+      search.start();
+
+      await wait(0);
+      expect(search._hasSearchWidget).toBe(false);
+      expect(search.status).toBe('idle');
+      expect(search.client.search).not.toHaveBeenCalled();
+    });
+
+    it('does not trigger composition when a root widget requires no request', async () => {
+      const search = instantsearch({
+        searchClient: createCompositionClient(),
+        compositionID: 'composition-id',
+      }).addWidgets([
+        createWidget({ dependsOn: 'none' }),
+        index({ EXPERIMENTAL_isolated: true, indexName: 'a' }).addWidgets([
+          virtualSearchBox({}),
+        ]),
+      ]);
+      search.start();
+
+      await wait(0);
+      expect(search.client.search).not.toHaveBeenCalled();
+
+      search.renderState.a.searchBox?.refine('please search now');
+
+      expect(search.client.search).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('on error', () => {
+    it('resets the state', async () => {
+      const searchClient = createSearchClient();
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient,
+      }).addWidgets([virtualSearchBox({})]);
+
+      search.start();
+      // suppress global error
+      search.on('error', () => {});
+
+      // initial state: nothing
+      expect(search.getUiState()).toEqual({ indexName: {} });
+
+      // set query
+      search.setUiState({ indexName: { query: 'iphone' } });
+      // state updates
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+
+      // wait for the search to be done
+      await wait(0);
+      // state is still the same
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+
+      // start erroring
+      castToJestMock(searchClient.search).mockRejectedValue(
+        new Error('search error')
+      );
+
+      // set query
+      search.setUiState({ indexName: { query: 'iphone 2' } });
+      // state updates
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone 2' } });
+
+      // wait for the search to be done
+      await wait(0);
+      // state has reverted
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+    });
+
+    it('resets the state again when a second search fails', async () => {
+      const searchClient = createSearchClient();
+      const search = instantsearch({
+        indexName: 'indexName',
+        searchClient,
+      }).addWidgets([virtualSearchBox({})]);
+
+      search.start();
+      // suppress global error
+      search.on('error', () => {});
+
+      search.setUiState({ indexName: { query: 'iphone' } });
+      await wait(0);
+
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+
+      castToJestMock(searchClient.search).mockRejectedValue(
+        new Error('search error')
+      );
+
+      search.setUiState({ indexName: { query: 'iphone 2' } });
+      await wait(0);
+
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+
+      // The roll-back runs once per failed search, not once per error state, so
+      // the next failure reverts too.
+      search.setUiState({ indexName: { query: 'iphone 3' } });
+      await wait(0);
+
+      expect(search.getUiState()).toEqual({ indexName: { query: 'iphone' } });
+    });
+  });
+});

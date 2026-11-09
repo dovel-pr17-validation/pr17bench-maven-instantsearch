@@ -1,0 +1,1431 @@
+/** @jsx h */
+
+import {
+  createChatComponent,
+  findTool,
+  shouldSearchToolRenderResults,
+} from 'instantsearch-ui-components';
+import { Fragment, h, render } from 'preact';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+
+import TemplateComponent from '../../components/Template/Template';
+import connectChat from '../../connectors/chat/connectChat';
+import {
+  SearchIndexToolType,
+  RecommendToolType,
+  MemorizeToolType,
+  MemorySearchToolType,
+  PonderToolType,
+  DisplayResultsToolType,
+  CompareProductsToolType,
+  GroupedResultsToolType,
+} from '../../lib/chat';
+import {
+  focusAfterReveal,
+  getActiveContainerAnimations,
+  holdContainerInertUntilReveal,
+  restoreContainerInertUntilReveal,
+} from '../../lib/chat/focusAfterReveal';
+import { prepareTemplateProps } from '../../lib/templating';
+import { useStickToBottom } from '../../lib/useStickToBottom';
+import {
+  getContainerNode,
+  createDocumentationMessageGenerator,
+} from '../../lib/utils';
+
+import { createCompareProductsTool } from './compare-products-tool';
+import { createGroupedResultsTool } from './grouped-results-tool';
+import { createCarouselTool } from './search-index-tool';
+
+import type { TemplateProps } from '../../components/Template/Template';
+import type {
+  ChatRenderState,
+  ChatConnectorParams,
+  ChatWidgetDescription,
+} from '../../connectors/chat/connectChat';
+import type { PreparedTemplateProps } from '../../lib/templating';
+import type {
+  WidgetFactory,
+  Renderer,
+  Hit,
+  TemplateWithBindEvent,
+  BaseHit,
+  Template,
+  IndexUiState,
+  IndexWidget,
+} from '../../types';
+import type {
+  ChatClassNames,
+  ChatComponentPropsWithContext,
+  ChatEmptyProps,
+  ChatHeaderProps,
+  ChatHeaderTranslations,
+  ChatLayoutOwnProps,
+  ChatMessageActionProps,
+  ChatMessageBase,
+  ChatMessageErrorProps,
+  ChatMessageLoaderPropsWithContext,
+  ChatMessageProps,
+  ChatMessageReasoningComponentProps,
+  ChatMessageTextComponentProps,
+  ChatMessagesProps,
+  ChatMessagesTranslations,
+  ChatPromptProps,
+  ChatPromptTranslations,
+  ChatStatus,
+  ClientSideToolComponentProps,
+  ClientSideTools,
+  RecordWithObjectID,
+  UserClientSideTool,
+} from 'instantsearch-ui-components';
+import type { ComponentProps } from 'preact';
+
+const withUsage = createDocumentationMessageGenerator({ name: 'chat' });
+
+const Chat = createChatComponent({
+  createElement: h,
+  Fragment,
+  useMemo,
+  useState,
+  useEffect,
+});
+
+export {
+  SearchIndexToolType,
+  RecommendToolType,
+  // eslint-disable-next-line typescript/no-deprecated
+  DisplayResultsToolType,
+  CompareProductsToolType,
+  GroupedResultsToolType,
+};
+
+function getDefinedProperties<T extends object>(obj: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(obj).filter(([, value]) => value !== undefined)
+  ) as Partial<T>;
+}
+
+function mergeToolOptions<
+  TTool extends {
+    streamInput?: boolean;
+    shouldRender?: unknown;
+    templates?: { layout?: unknown };
+  },
+>(
+  defaultTools: Record<string, TTool>,
+  userTools?: Record<string, TTool>
+): Record<string, TTool> {
+  if (!userTools) {
+    return defaultTools;
+  }
+
+  const tools = { ...defaultTools, ...userTools };
+
+  Object.keys(userTools).forEach((toolName) => {
+    const userTool = userTools[toolName];
+    const defaultTool = defaultTools[toolName];
+    const defaultStreamInput = defaultTool?.streamInput;
+
+    if (
+      userTool.templates?.layout !== undefined &&
+      userTool.streamInput === undefined &&
+      defaultStreamInput !== undefined
+    ) {
+      tools[toolName] = {
+        ...tools[toolName],
+        streamInput: defaultStreamInput,
+      };
+    }
+
+    // Overriding a tool's rendering shouldn't opt it out of the conditions
+    // under which the default renders at all.
+    if (userTool.shouldRender === undefined && defaultTool?.shouldRender) {
+      tools[toolName] = {
+        ...tools[toolName],
+        shouldRender: defaultTool.shouldRender,
+      };
+    }
+  });
+
+  return tools;
+}
+
+function createDefaultTools<
+  THit extends RecordWithObjectID = RecordWithObjectID,
+>(
+  templates: ChatTemplates<THit>,
+  getSearchPageURL?: (nextUiState: IndexUiState) => string
+): UserClientSideToolsWithTemplate {
+  const groupedResultsTool = createGroupedResultsTool(templates);
+
+  return {
+    [SearchIndexToolType]: {
+      ...createCarouselTool(true, templates, getSearchPageURL),
+      // The agent decides per turn whether the richer Grouped Results tool
+      // takes over the rendering of the search results.
+      shouldRender: shouldSearchToolRenderResults,
+    },
+    [RecommendToolType]: createCarouselTool(false, templates, getSearchPageURL),
+    [GroupedResultsToolType]: groupedResultsTool,
+    // Agents configured before the rename still emit the legacy tool name.
+    // eslint-disable-next-line typescript/no-deprecated
+    [DisplayResultsToolType]: groupedResultsTool,
+    [CompareProductsToolType]: createCompareProductsTool(
+      // The default `item` template dumps the record as JSON; without a custom
+      // one, the product headers show the record's name instead.
+      templates.item === defaultTemplates.item ? undefined : templates
+    ),
+    [MemorizeToolType]: { templates: {} },
+    [MemorySearchToolType]: { templates: {} },
+    [PonderToolType]: { templates: {} },
+  };
+}
+
+type ChatWrapperProps = {
+  layoutComponent?: (props: ChatLayoutOwnProps) => JSX.Element;
+  cssClasses: ChatCSSClasses;
+  chatOpen: boolean;
+  setChatOpen: (open: boolean) => void;
+  chatMessages: ChatMessageBase[];
+  indexUiState: IndexUiState;
+  setIndexUiState: IndexWidget['setIndexUiState'];
+  chatStatus: ChatStatus;
+  chatInput: ChatRenderState['input'];
+  setChatInput: ChatRenderState['setInput'];
+  sendMessage: ChatRenderState['sendMessage'];
+  regenerate: ChatRenderState['regenerate'];
+  stop: ChatRenderState['stop'];
+  error: ChatRenderState['error'];
+  clearMessages: () => void;
+  onFeedback?: ChatRenderState['sendChatMessageFeedback'];
+  feedbackState: ChatRenderState['feedbackState'];
+  toolsForUi: ClientSideTools;
+  headerProps: {
+    layoutComponent: ComponentProps<typeof Chat>['headerComponent'];
+    closeIconComponent: ChatHeaderProps['closeIconComponent'];
+    minimizeIconComponent: ChatHeaderProps['minimizeIconComponent'];
+    maximizeIconComponent: ChatHeaderProps['maximizeIconComponent'];
+    titleIconComponent: ChatHeaderProps['titleIconComponent'];
+    translations: Partial<ChatHeaderTranslations>;
+  };
+  messagesProps: {
+    loaderComponent:
+      | ((props: ChatMessageLoaderPropsWithContext) => JSX.Element)
+      | undefined;
+    errorComponent:
+      | ((
+          props: ChatComponentPropsWithContext<ChatMessageErrorProps>
+        ) => JSX.Element)
+      | undefined;
+    emptyComponent:
+      // The deprecated root props are still passed alongside `context`.
+      // eslint-disable-next-line typescript/no-deprecated
+      | ((props: ChatComponentPropsWithContext<ChatEmptyProps>) => JSX.Element)
+      | undefined;
+    loaderPosition: ChatMessagesProps['loaderPosition'];
+    shouldShowLoader: ChatMessagesProps['shouldShowLoader'];
+    loaderShowDelay: ChatMessagesProps['loaderShowDelay'];
+    loaderMinDuration: ChatMessagesProps['loaderMinDuration'];
+    actionsComponent:
+      | ((
+          props: ChatComponentPropsWithContext<{
+            actions: ChatMessageActionProps[];
+          }>
+        ) => JSX.Element)
+      | undefined;
+    assistantMessageProps: {
+      leadingComponent: ChatMessageProps['leadingComponent'];
+      reasoningComponent: ChatMessageProps['reasoningComponent'];
+      textComponent: ChatMessageProps['textComponent'];
+      footerComponent: ChatMessageProps['footerComponent'];
+      showReasoning: ChatMessageProps['showReasoning'];
+    };
+    userMessageProps: {
+      leadingComponent: ChatMessageProps['leadingComponent'];
+      textComponent: ChatMessageProps['textComponent'];
+      footerComponent: ChatMessageProps['footerComponent'];
+    };
+    translations: Partial<ChatMessagesTranslations>;
+    messageTranslations: Partial<ChatMessageProps['translations']>;
+    sendMessage: ChatLayoutOwnProps['sendMessage'];
+    setInput: (input: string) => void;
+  };
+  promptProps: {
+    layoutComponent: ComponentProps<typeof Chat>['promptComponent'];
+    headerComponent: ChatPromptProps['headerComponent'];
+    footerComponent: ChatPromptProps['footerComponent'];
+    translations: Partial<ChatPromptTranslations>;
+    promptRef: { current: HTMLTextAreaElement | null };
+    autoFocus: boolean;
+  };
+  suggestionsProps: {
+    suggestions?: string[];
+    onSuggestionClick: (suggestion: string) => void;
+    suggestionsComponent: ComponentProps<typeof Chat>['suggestionsComponent'];
+  };
+  state: ReturnType<typeof createLocalState>;
+};
+
+function ChatWrapper({
+  layoutComponent,
+  cssClasses,
+  chatOpen,
+  setChatOpen,
+  chatMessages,
+  indexUiState,
+  setIndexUiState,
+  chatStatus,
+  chatInput,
+  setChatInput,
+  sendMessage,
+  regenerate,
+  stop,
+  error,
+  clearMessages,
+  onFeedback,
+  feedbackState,
+  toolsForUi,
+  headerProps,
+  messagesProps,
+  promptProps,
+  suggestionsProps,
+  state,
+}: ChatWrapperProps) {
+  const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
+    useStickToBottom({
+      initial: 'smooth',
+      resize: 'smooth',
+    });
+  const sendMessageAndScrollToBottom = useCallback<
+    ChatRenderState['sendMessage']
+  >(
+    (...args) => {
+      scrollToBottom();
+      return sendMessage(...args);
+    },
+    [scrollToBottom, sendMessage]
+  );
+
+  // Keep the conversation pinned to the bottom while streaming. The stick-to-
+  // bottom ResizeObserver only reacts to content *height* changes, but tool
+  // results such as a horizontally-growing carousel stream in without changing
+  // height — so we also re-pin on every message/status update. Passing
+  // `preserveScrollPosition` reuses the existing "only if already at the
+  // bottom" gate, so this never fights a user who has scrolled up to read.
+  useEffect(() => {
+    if (chatStatus === 'streaming' || chatStatus === 'submitted') {
+      scrollToBottom({ preserveScrollPosition: true });
+    }
+  }, [chatMessages, chatStatus, scrollToBottom]);
+
+  state.init();
+
+  const [maximized, setMaximized] = state.use(false);
+
+  return (
+    <Chat
+      layoutComponent={layoutComponent}
+      classNames={cssClasses}
+      open={chatOpen}
+      maximized={maximized}
+      sendMessage={sendMessageAndScrollToBottom}
+      regenerate={regenerate}
+      stop={stop}
+      error={error}
+      headerComponent={headerProps.layoutComponent}
+      promptComponent={promptProps.layoutComponent}
+      suggestionsComponent={suggestionsProps.suggestionsComponent}
+      headerProps={{
+        onClose: () => setChatOpen(false),
+        maximized,
+        onToggleMaximize: () => setMaximized(!maximized),
+        onClear: clearMessages,
+        canClear: Boolean(chatMessages?.length),
+        closeIconComponent: headerProps.closeIconComponent,
+        minimizeIconComponent: headerProps.minimizeIconComponent,
+        maximizeIconComponent: headerProps.maximizeIconComponent,
+        titleIconComponent: headerProps.titleIconComponent,
+        translations: headerProps.translations,
+      }}
+      messagesProps={{
+        status: chatStatus,
+        onReload: (messageId) => regenerate({ messageId }),
+        onClose: () => setChatOpen(false),
+        onFeedback,
+        feedbackState,
+        messages: chatMessages,
+        indexUiState,
+        isScrollAtBottom: isAtBottom,
+        scrollRef,
+        contentRef,
+        onScrollToBottom: scrollToBottom,
+        setIndexUiState,
+        tools: toolsForUi,
+        loaderComponent: messagesProps.loaderComponent,
+        loaderPosition: messagesProps.loaderPosition,
+        shouldShowLoader: messagesProps.shouldShowLoader,
+        loaderShowDelay: messagesProps.loaderShowDelay,
+        loaderMinDuration: messagesProps.loaderMinDuration,
+        errorComponent: messagesProps.errorComponent,
+        emptyComponent: messagesProps.emptyComponent,
+        actionsComponent: messagesProps.actionsComponent,
+        assistantMessageProps: messagesProps.assistantMessageProps,
+        userMessageProps: messagesProps.userMessageProps,
+        translations: messagesProps.translations,
+        messageTranslations: messagesProps.messageTranslations,
+        sendMessage: sendMessageAndScrollToBottom,
+        setInput: messagesProps.setInput,
+      }}
+      promptProps={{
+        promptRef: promptProps.promptRef,
+        status: chatStatus,
+        value: chatInput,
+        onInput: (event) => {
+          setChatInput((event.currentTarget as HTMLInputElement).value);
+        },
+        onSubmit: () => {
+          sendMessageAndScrollToBottom({ text: chatInput });
+          setChatInput('');
+        },
+        onStop: () => {
+          stop();
+        },
+        headerComponent: promptProps.headerComponent,
+        footerComponent: promptProps.footerComponent,
+        translations: promptProps.translations,
+        autoFocus: promptProps.autoFocus,
+      }}
+      suggestionsProps={{
+        onSuggestionClick: (suggestion) => {
+          sendMessageAndScrollToBottom({ text: suggestion });
+        },
+        suggestions: suggestionsProps.suggestions,
+      }}
+    />
+  );
+}
+
+const createRenderer = <THit extends RecordWithObjectID = RecordWithObjectID>({
+  renderState,
+  cssClasses,
+  containerNode,
+  templates,
+  tools,
+  showReasoning,
+  loaderPosition,
+  shouldShowLoader,
+  loaderShowDelay,
+  loaderMinDuration,
+  isInlineLayoutTemplate,
+}: {
+  containerNode: HTMLElement;
+  cssClasses: ChatCSSClasses;
+  renderState: {
+    templateProps?: PreparedTemplateProps<ChatTemplates<THit>>;
+  };
+  templates: ChatTemplates<THit>;
+  tools: UserClientSideToolsWithTemplate;
+  showReasoning: boolean;
+  loaderPosition: ChatMessagesProps['loaderPosition'];
+  shouldShowLoader: ChatMessagesProps['shouldShowLoader'];
+  loaderShowDelay: ChatMessagesProps['loaderShowDelay'];
+  loaderMinDuration: ChatMessagesProps['loaderMinDuration'];
+  isInlineLayoutTemplate: boolean;
+}): Renderer<ChatRenderState, Partial<ChatWidgetParams>> => {
+  const state = createLocalState();
+  const promptRef = { current: null as HTMLTextAreaElement | null };
+  let focusRequestId = 0;
+
+  // Template wrappers are rendered as component types downstream. Recreating
+  // them each render would make Preact remount the chat subtree (and drop
+  // textarea focus) on every keystroke. Create them once and read the latest
+  // `PreparedTemplateProps` from mutable refs updated per render.
+  type TemplateRef = {
+    current: PreparedTemplateProps<ChatTemplates<THit>> | undefined;
+  };
+  const makeTemplateRef = (): TemplateRef => ({ current: undefined });
+  const headerTemplateRef = makeTemplateRef();
+  const messagesTemplateRef = makeTemplateRef();
+  const loaderTemplateRef = makeTemplateRef();
+  const emptyTemplateRef = makeTemplateRef();
+  const assistantMessageTemplateRef = makeTemplateRef();
+  const userMessageTemplateRef = makeTemplateRef();
+  const promptTemplateRef = makeTemplateRef();
+  const layoutTemplateRef = makeTemplateRef();
+
+  // Per-tool layout components must be stable across renders or Preact will
+  // remount each tool subtree on every streaming update (e.g. resetting
+  // carousel scroll). One component per tool key reads its latest templates
+  // from a mutable ref refreshed on each render.
+  const toolTemplatesByKey = new Map<
+    string,
+    { current: UserClientSideToolWithTemplate['templates'] }
+  >();
+  const toolLayoutComponentByKey = new Map<
+    string,
+    (props: ClientSideToolComponentProps) => JSX.Element
+  >();
+
+  function createStableTemplateComponent<TProps>(
+    templateRef: TemplateRef,
+    templateKey: string,
+    rootTagName: TemplateProps['rootTagName']
+  ): (props?: TProps) => JSX.Element {
+    return (props?: TProps) => (
+      <TemplateComponent
+        {...(templateRef.current as PreparedTemplateProps<ChatTemplates<THit>>)}
+        templateKey={templateKey}
+        rootTagName={rootTagName}
+        data={props as unknown as Record<string, unknown>}
+      />
+    );
+  }
+
+  const stableHeaderLayoutComponent = templates.header?.layout
+    ? createStableTemplateComponent<ChatHeaderProps>(
+        headerTemplateRef,
+        'layout',
+        'div'
+      )
+    : undefined;
+  const stableHeaderCloseIconComponent = templates.header?.closeIcon
+    ? createStableTemplateComponent<Record<string, never>>(
+        headerTemplateRef,
+        'closeIcon',
+        'span'
+      )
+    : undefined;
+  const stableHeaderMinimizeIconComponent = templates.header?.minimizeIcon
+    ? createStableTemplateComponent<Record<string, never>>(
+        headerTemplateRef,
+        'minimizeIcon',
+        'span'
+      )
+    : undefined;
+  const stableHeaderMaximizeIconComponent = templates.header?.maximizeIcon
+    ? createStableTemplateComponent<{ maximized: boolean }>(
+        headerTemplateRef,
+        'maximizeIcon',
+        'span'
+      )
+    : undefined;
+  const stableHeaderTitleIconComponent = templates.header?.titleIcon
+    ? createStableTemplateComponent<Record<string, never>>(
+        headerTemplateRef,
+        'titleIcon',
+        'span'
+      )
+    : undefined;
+  const stableMessagesErrorComponent = templates.messages?.error
+    ? createStableTemplateComponent<
+        ChatComponentPropsWithContext<ChatMessageErrorProps>
+      >(messagesTemplateRef, 'error', 'div')
+    : undefined;
+  const stableMessagesEmptyComponent = templates.empty
+    ? createStableTemplateComponent<
+        // The deprecated root props are still passed alongside `context`.
+        // eslint-disable-next-line typescript/no-deprecated
+        ChatComponentPropsWithContext<ChatEmptyProps>
+      >(emptyTemplateRef, 'empty', 'div')
+    : undefined;
+  const stableAssistantMessageLeadingComponent = templates.assistantMessage
+    ?.leading
+    ? createStableTemplateComponent<Record<string, never>>(
+        assistantMessageTemplateRef,
+        'leading',
+        'fragment'
+      )
+    : undefined;
+  const stableAssistantMessageTextComponent = templates.assistantMessage?.text
+    ? createStableTemplateComponent<ChatMessageTextComponentProps>(
+        assistantMessageTemplateRef,
+        'text',
+        'fragment'
+      )
+    : undefined;
+  const stableAssistantMessageReasoningComponent = templates.assistantMessage
+    ?.reasoning
+    ? createStableTemplateComponent<ChatMessageReasoningComponentProps>(
+        assistantMessageTemplateRef,
+        'reasoning',
+        'fragment'
+      )
+    : undefined;
+  const stableAssistantMessageFooterComponent = templates.assistantMessage
+    ?.footer
+    ? createStableTemplateComponent<Record<string, never>>(
+        assistantMessageTemplateRef,
+        'footer',
+        'fragment'
+      )
+    : undefined;
+  const stableUserMessageLeadingComponent = templates.userMessage?.leading
+    ? createStableTemplateComponent<Record<string, never>>(
+        userMessageTemplateRef,
+        'leading',
+        'fragment'
+      )
+    : undefined;
+  const stableUserMessageTextComponent = templates.userMessage?.text
+    ? createStableTemplateComponent<ChatMessageTextComponentProps>(
+        userMessageTemplateRef,
+        'text',
+        'fragment'
+      )
+    : undefined;
+  const stableUserMessageFooterComponent = templates.userMessage?.footer
+    ? createStableTemplateComponent<Record<string, never>>(
+        userMessageTemplateRef,
+        'footer',
+        'fragment'
+      )
+    : undefined;
+  const stablePromptLayoutComponent = templates.prompt?.layout
+    ? createStableTemplateComponent<ChatPromptProps>(
+        promptTemplateRef,
+        'layout',
+        'div'
+      )
+    : undefined;
+  const stablePromptHeaderComponent = templates.prompt?.header
+    ? createStableTemplateComponent<Record<string, never>>(
+        promptTemplateRef,
+        'header',
+        'fragment'
+      )
+    : undefined;
+  const stablePromptFooterComponent = templates.prompt?.footer
+    ? createStableTemplateComponent<Record<string, never>>(
+        promptTemplateRef,
+        'footer',
+        'fragment'
+      )
+    : undefined;
+  const stableActionsComponent = templates.actions
+    ? (
+        actionsProps: ChatComponentPropsWithContext<{
+          actions: ChatMessageActionProps[];
+        }>
+      ) => (
+        <TemplateComponent
+          {...renderState.templateProps}
+          templateKey="actions"
+          rootTagName="div"
+          data={actionsProps}
+        />
+      )
+    : undefined;
+  const stableLoaderComponent = templates.loader
+    ? createStableTemplateComponent<ChatMessageLoaderPropsWithContext>(
+        loaderTemplateRef,
+        'loader',
+        'div'
+      )
+    : undefined;
+  const stableSuggestionsComponent = templates.suggestions
+    ? (suggestionsProps: {
+        suggestions?: string[];
+        onSuggestionClick: (suggestion: string) => void;
+      }) => (
+        <TemplateComponent
+          {...renderState.templateProps}
+          templateKey="suggestions"
+          rootTagName="fragment"
+          data={suggestionsProps}
+        />
+      )
+    : undefined;
+  const stableLayoutComponent = templates.layout
+    ? (layoutProps: ChatLayoutOwnProps) => {
+        const {
+          headerComponent,
+          messagesComponent,
+          promptComponent,
+          ...restLayoutProps
+        } = layoutProps;
+        return (
+          <TemplateComponent
+            {...(layoutTemplateRef.current as PreparedTemplateProps<
+              ChatTemplates<THit>
+            >)}
+            templateKey="layout"
+            rootTagName="fragment"
+            data={{
+              ...restLayoutProps,
+              templates: {
+                header: () => headerComponent,
+                messages: () => messagesComponent,
+                prompt: () => promptComponent,
+              },
+            }}
+          />
+        );
+      }
+    : undefined;
+
+  // eslint-disable-next-line complexity
+  return (props, isFirstRendering) => {
+    const {
+      indexUiState,
+      input,
+      instantSearchInstance,
+      messages,
+      open,
+      sendMessage,
+      setIndexUiState,
+      setInput,
+      setOpen,
+      status,
+      error,
+      regenerate,
+      stop,
+      clearMessages,
+      tools: toolsFromConnector,
+      suggestions,
+      sendChatMessageFeedback: onFeedback,
+      feedbackState,
+      '~consumeInputFocus': consumeInputFocus,
+      '~isOpenStatePersistenceEnabled': isOpenStatePersistenceEnabled,
+    } = props;
+
+    if (__DEV__ && error) {
+      throw error;
+    }
+
+    if (isFirstRendering) {
+      renderState.templateProps = prepareTemplateProps({
+        defaultTemplates: {} as unknown as ChatTemplates<THit>,
+        templatesConfig: instantSearchInstance.templatesConfig,
+        templates,
+      });
+      return;
+    }
+
+    const toolsForUi: ClientSideTools = {};
+    Object.entries(toolsFromConnector).forEach(([key, connectorTool]) => {
+      // The connector keys its tools the way the widget does, so this is an
+      // exact hit; `findTool` keeps one resolution rule across the flavors.
+      const widgetTool = findTool(key, tools);
+
+      let layoutComponent:
+        | ((props: ClientSideToolComponentProps) => JSX.Element)
+        | undefined;
+      if (widgetTool?.templates?.layout) {
+        let templatesRef = toolTemplatesByKey.get(key);
+        if (!templatesRef) {
+          templatesRef = { current: widgetTool.templates };
+          toolTemplatesByKey.set(key, templatesRef);
+        } else {
+          templatesRef.current = widgetTool.templates;
+        }
+
+        layoutComponent = toolLayoutComponentByKey.get(key);
+        if (!layoutComponent) {
+          const ref = templatesRef;
+          layoutComponent = (
+            layoutComponentProps: ClientSideToolComponentProps
+          ) => (
+            <TemplateComponent
+              templates={ref.current}
+              rootTagName="fragment"
+              templateKey="layout"
+              data={layoutComponentProps}
+            />
+          );
+          toolLayoutComponentByKey.set(key, layoutComponent);
+        }
+      }
+
+      toolsForUi[key] = {
+        ...connectorTool,
+        ...(layoutComponent && { layoutComponent }),
+      };
+    });
+
+    headerTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<ChatTemplates<THit>['header']>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: templates.header,
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+    const headerTranslations: Partial<ChatHeaderTranslations> =
+      getDefinedProperties({
+        title: templates.header?.titleText,
+        minimizeLabel: templates.header?.minimizeLabelText,
+        maximizeLabel: templates.header?.maximizeLabelText,
+        closeLabel: templates.header?.closeLabelText,
+        clearLabel: templates.header?.clearLabelText,
+      });
+
+    messagesTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<ChatTemplates<THit>['messages']>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: templates.messages,
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+    loaderTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<Pick<ChatTemplates<THit>, 'loader'>>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: { loader: templates.loader },
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+    emptyTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<Pick<ChatTemplates<THit>, 'empty'>>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: { empty: templates.empty },
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+    const messagesTranslations: Partial<ChatMessagesTranslations> =
+      getDefinedProperties({
+        scrollToBottomLabel: templates.messages?.scrollToBottomLabelText,
+        loaderText: templates.loaderText,
+        copyToClipboardLabel: templates.messages?.copyToClipboardLabelText,
+        regenerateLabel: templates.messages?.regenerateLabelText,
+        conversationLabel: templates.messages?.conversationLabelText,
+        respondingStatusText: templates.messages?.respondingStatusText,
+        responseCompleteStatusText:
+          templates.messages?.responseCompleteStatusText,
+        errorStatusText: templates.messages?.errorStatusText,
+      });
+
+    assistantMessageTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<ChatTemplates<THit>['assistantMessage']>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: templates.assistantMessage,
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+
+    const messageTranslations = getDefinedProperties({
+      actionsLabel: templates.message?.actionsLabelText,
+      messageLabel: templates.message?.messageLabelText,
+      reasoningLabel: templates.message?.reasoningLabelText,
+      toolErrorRetryText: templates.message?.toolErrorRetryText,
+    });
+
+    userMessageTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<ChatTemplates<THit>['userMessage']>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: templates.userMessage,
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+
+    promptTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<ChatTemplates<THit>['prompt']>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: templates.prompt,
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+    const promptTranslations: Partial<ChatPromptTranslations> =
+      getDefinedProperties({
+        textareaLabel: templates.prompt?.textareaLabelText,
+        textareaPlaceholder: templates.prompt?.textareaPlaceholderText,
+        emptyMessageTooltip: templates.prompt?.emptyMessageTooltipText,
+        stopResponseTooltip: templates.prompt?.stopResponseTooltipText,
+        sendMessageTooltip: templates.prompt?.sendMessageTooltipText,
+        disclaimer: templates.prompt?.disclaimerText,
+      });
+
+    layoutTemplateRef.current = prepareTemplateProps({
+      defaultTemplates: {} as unknown as NonNullable<
+        Required<Pick<ChatTemplates<THit>, 'layout'>>
+      >,
+      templatesConfig: instantSearchInstance.templatesConfig,
+      templates: { layout: templates.layout },
+    }) as PreparedTemplateProps<ChatTemplates<THit>>;
+
+    state.subscribe(rerender);
+
+    function rerender() {
+      render(
+        <ChatWrapper
+          layoutComponent={stableLayoutComponent}
+          cssClasses={cssClasses}
+          chatOpen={open}
+          setChatOpen={setOpen}
+          chatMessages={messages}
+          indexUiState={indexUiState}
+          setIndexUiState={setIndexUiState}
+          chatStatus={status}
+          chatInput={input}
+          setChatInput={setInput}
+          sendMessage={sendMessage}
+          regenerate={regenerate}
+          stop={stop}
+          error={error}
+          clearMessages={clearMessages}
+          onFeedback={onFeedback}
+          feedbackState={feedbackState}
+          toolsForUi={toolsForUi}
+          headerProps={{
+            layoutComponent: stableHeaderLayoutComponent,
+            closeIconComponent: stableHeaderCloseIconComponent,
+            minimizeIconComponent: stableHeaderMinimizeIconComponent,
+            maximizeIconComponent: stableHeaderMaximizeIconComponent,
+            titleIconComponent: stableHeaderTitleIconComponent,
+            translations: headerTranslations,
+          }}
+          messagesProps={{
+            loaderComponent: stableLoaderComponent,
+            loaderPosition,
+            shouldShowLoader,
+            loaderShowDelay,
+            loaderMinDuration,
+            errorComponent: stableMessagesErrorComponent,
+            emptyComponent: stableMessagesEmptyComponent,
+            actionsComponent: stableActionsComponent,
+            assistantMessageProps: {
+              leadingComponent: stableAssistantMessageLeadingComponent,
+              reasoningComponent: stableAssistantMessageReasoningComponent,
+              textComponent: stableAssistantMessageTextComponent,
+              footerComponent: stableAssistantMessageFooterComponent,
+              showReasoning,
+            },
+            userMessageProps: {
+              leadingComponent: stableUserMessageLeadingComponent,
+              textComponent: stableUserMessageTextComponent,
+              footerComponent: stableUserMessageFooterComponent,
+            },
+            translations: messagesTranslations,
+            messageTranslations,
+            sendMessage,
+            setInput,
+          }}
+          promptProps={{
+            layoutComponent: stablePromptLayoutComponent,
+            headerComponent: stablePromptHeaderComponent,
+            footerComponent: stablePromptFooterComponent,
+            translations: promptTranslations,
+            promptRef,
+            autoFocus: !isOpenStatePersistenceEnabled || isInlineLayoutTemplate,
+          }}
+          state={state}
+          suggestionsProps={{
+            suggestions,
+            onSuggestionClick: (message: string) => {
+              sendMessage({ text: message });
+            },
+            suggestionsComponent: stableSuggestionsComponent,
+          }}
+        />,
+        containerNode
+      );
+    }
+
+    const shouldFocusPrompt = consumeInputFocus?.() ?? false;
+    const animationsBeforeReveal = shouldFocusPrompt
+      ? getActiveContainerAnimations(promptRef.current)
+      : [];
+
+    rerender();
+
+    if (open) {
+      restoreContainerInertUntilReveal(promptRef.current);
+    }
+
+    if (!open) {
+      focusRequestId++;
+    }
+
+    if (shouldFocusPrompt) {
+      const currentFocusRequestId = ++focusRequestId;
+      holdContainerInertUntilReveal(promptRef.current);
+      window.requestAnimationFrame(() => {
+        const prompt = promptRef.current;
+        focusAfterReveal(
+          prompt,
+          animationsBeforeReveal,
+          () => {
+            return (
+              focusRequestId === currentFocusRequestId &&
+              promptRef.current === prompt
+            );
+          },
+          () => {
+            return focusRequestId === currentFocusRequestId;
+          }
+        );
+      });
+    }
+  };
+};
+
+export type ClientSideToolTemplateData = ClientSideToolComponentProps;
+
+export type UserClientSideToolTemplates = Partial<{
+  layout: TemplateWithBindEvent<ClientSideToolTemplateData>;
+}>;
+
+type UserClientSideToolWithTemplate = Omit<
+  UserClientSideTool,
+  'layoutComponent'
+> & {
+  templates: UserClientSideToolTemplates;
+};
+type UserClientSideToolsWithTemplate = Record<
+  string,
+  UserClientSideToolWithTemplate
+>;
+
+export type Tool = UserClientSideToolWithTemplate;
+export type Tools = UserClientSideToolsWithTemplate;
+
+export type ChatCSSClasses = Partial<ChatClassNames>;
+
+export type ChatLayoutTemplateData = Omit<
+  ChatLayoutOwnProps,
+  'headerComponent' | 'messagesComponent' | 'promptComponent'
+> & {
+  templates: {
+    header: () => JSX.Element;
+    messages: () => JSX.Element;
+    prompt: () => JSX.Element;
+  };
+};
+
+export type ChatTemplates<THit extends NonNullable<object> = BaseHit> =
+  Partial<{
+    /**
+     * Custom layout template for the chat widget.
+     */
+    layout: Template<ChatLayoutTemplateData>;
+
+    /**
+     * Template to use for each result. This template will receive an object containing a single record.
+     */
+    item: TemplateWithBindEvent<Hit<THit>>;
+
+    /**
+     * Custom loader template for the chat widget.
+     */
+    loader: Template<ChatMessageLoaderPropsWithContext>;
+
+    /**
+     * Text to display in the loader. Pass a function to label the wait by what
+     * the turn is doing, e.g. `({ phase }) => phase === 'tool' ? 'Searching…' : 'Thinking…'`.
+     */
+    loaderText: ChatMessagesTranslations['loaderText'];
+
+    /**
+     * Templates to use for the header.
+     */
+    header: Partial<{
+      /**
+       * Template to use for the chat header.
+       */
+      layout: Template<ChatHeaderProps>;
+      /**
+       * Optional close icon
+       */
+      closeIcon: Template;
+      /**
+       * Optional minimize icon
+       */
+      minimizeIcon?: Template;
+      /**
+       * Optional maximize icon
+       */
+      maximizeIcon?: Template<{ maximized: boolean }>;
+      /**
+       * Optional title icon (defaults to sparkles)
+       */
+      titleIcon?: Template;
+      /**
+       * The title to display in the header
+       */
+      titleText: string;
+      /**
+       * Accessible label for the minimize button
+       */
+      minimizeLabelText: string;
+      /**
+       * Accessible label for the maximize button
+       */
+      maximizeLabelText: string;
+      /**
+       * Accessible label for the close button
+       */
+      closeLabelText: string;
+      /**
+       * Text for the clear button
+       */
+      clearLabelText: string;
+    }>;
+
+    /**
+     * Templates to use for the messages.
+     */
+    messages: Partial<{
+      /**
+       * Template to use when there is an error loading messages
+       */
+      error: Template<ChatComponentPropsWithContext<ChatMessageErrorProps>>;
+      /**
+       * Label for the scroll to bottom button
+       */
+      scrollToBottomLabelText?: string;
+      /**
+       * Label for the copy to clipboard action
+       */
+      copyToClipboardLabelText?: string;
+      /**
+       * Label for the regenerate action
+       */
+      regenerateLabelText?: string;
+      /**
+       * Accessible name of the scrollable message history
+       */
+      conversationLabelText?: string;
+      /**
+       * Announced to screen readers when a reply starts
+       */
+      respondingStatusText?: string;
+      /**
+       * Announced to screen readers once a reply is complete. Receives the
+       * reply, so it can announce its text or a summary of it.
+       */
+      responseCompleteStatusText?: (context: {
+        message: ChatMessageBase;
+      }) => string;
+      /**
+       * Announced to screen readers when the chat ends in an error
+       */
+      errorStatusText?: string;
+    }>;
+
+    /**
+     * Templates to use for each message.
+     */
+    message: Partial<{
+      /**
+       * Label for the message actions
+       */
+      actionsLabelText?: string;
+      /**
+       * Label for the message container
+       */
+      messageLabelText?: string;
+      /**
+       * Label for reasoning disclosures
+       */
+      reasoningLabelText?: string;
+      /**
+       * Retry button text for failed tools
+       */
+      toolErrorRetryText?: string;
+    }>;
+
+    /**
+     * Templates to use for the assistant message.
+     */
+    assistantMessage: Partial<{
+      /**
+       * Template to use for the assistant message leading content.
+       */
+      leading: Template;
+      /**
+       * Template to use for assistant message text parts.
+       */
+      text: Template<ChatMessageTextComponentProps>;
+      /**
+       * Template to use for assistant message reasoning. It replaces the
+       * built-in disclosure rather than enabling reasoning: reasoning renders by
+       * default, and `showReasoning: false` suppresses this template too.
+       */
+      reasoning: Template<ChatMessageReasoningComponentProps>;
+      /**
+       * Template to use for the assistant message footer content.
+       */
+      footer: Template;
+    }>;
+
+    /**
+     * Templates to use for the user message.
+     */
+    userMessage: Partial<{
+      /**
+       * Template to use for the user message leading content.
+       */
+      leading: Template;
+      /**
+       * Template to use for user message text parts.
+       */
+      text: Template<ChatMessageTextComponentProps>;
+      /**
+       * Template to use for the user message footer content.
+       */
+      footer: Template;
+    }>;
+
+    /**
+     * Templates to use for the prompt.
+     */
+    prompt: Partial<{
+      /**
+       * Template to use for the chat prompt.
+       */
+      layout: Template<ChatPromptProps>;
+      /**
+       * Template to use for the prompt header.
+       */
+      header: Template;
+      /**
+       * Template to use for the prompt footer.
+       */
+      footer: Template;
+      /**
+       * The label for the textarea
+       */
+      textareaLabelText: string;
+      /**
+       * The placeholder text for the textarea
+       */
+      textareaPlaceholderText: string;
+      /**
+       * The tooltip for the submit button when message is empty
+       */
+      emptyMessageTooltipText: string;
+      /**
+       * The tooltip for the stop button
+       */
+      stopResponseTooltipText: string;
+      /**
+       * The tooltip for the send button
+       */
+      sendMessageTooltipText: string;
+      /**
+       * The disclaimer text shown in the footer
+       */
+      disclaimerText: string;
+    }>;
+
+    /**
+     * Template to use for the message actions.
+     */
+    actions: Template<
+      ChatComponentPropsWithContext<{
+        actions: ChatMessageActionProps[];
+        message: ChatMessageBase;
+      }>
+    >;
+
+    /**
+     * Template to use for the empty screen shown when there are no messages
+     */
+    // The deprecated root props are still passed alongside `context`.
+    // eslint-disable-next-line typescript/no-deprecated
+    empty?: Template<ChatComponentPropsWithContext<ChatEmptyProps>>;
+
+    /**
+     * Template to use for prompt suggestions.
+     */
+    suggestions: Template<{
+      suggestions: string[];
+      onSuggestionClick: (suggestion: string) => void;
+    }>;
+  }>;
+
+type ChatWidgetParams<THit extends RecordWithObjectID = RecordWithObjectID> = {
+  /**
+   * CSS Selector or HTMLElement to insert the widget.
+   */
+  container: string | HTMLElement;
+
+  /**
+   * Return the URL of the main search page with the `nextUiState`.
+   * This is used to navigate to the main search page when the user clicks on "View all" in the search tool.
+   *
+   * @example (nextUiState) => `/search?${qs.stringify(nextUiState)}`
+   */
+  getSearchPageURL?: (nextUiState: IndexUiState) => string;
+
+  /**
+   * Client-side tools to add to the chat
+   */
+  tools?: UserClientSideToolsWithTemplate;
+
+  /**
+   * Templates to use for the widget.
+   */
+  templates?: ChatTemplates<THit>;
+
+  /**
+   * CSS classes to add.
+   */
+  cssClasses?: ChatCSSClasses;
+
+  /**
+   * Disable validation that requires either `chatTrigger` or AI mode.
+   */
+  disableTriggerValidation?: boolean;
+
+  /**
+   * Whether to render the reasoning an agent sends. `true` by default, so
+   * reasoning that arrives is shown. Pass `false` to suppress it in this
+   * widget. It cannot make an agent send reasoning: whether reasoning reaches
+   * the client at all is the agent's own `sendReasoning` setting.
+   */
+  showReasoning?: boolean;
+
+  /**
+   * Where the loader renders: as its own row after the last message
+   * (`messages-end`, the default) or inside the streaming assistant message
+   * (`message-inline`).
+   */
+  loaderPosition?: ChatMessagesProps['loaderPosition'];
+
+  /**
+   * Overrides when the loader shows. Receives the turn context plus the
+   * built-in decision as `defaultValue`.
+   */
+  shouldShowLoader?: ChatMessagesProps['shouldShowLoader'];
+
+  /**
+   * How long (ms) a renewed loading state must hold before the loader comes back
+   * after having been hidden in the same turn.
+   */
+  loaderShowDelay?: ChatMessagesProps['loaderShowDelay'];
+
+  /**
+   * Minimum time (ms) the loader stays on screen once shown, while the turn is
+   * still running.
+   */
+  loaderMinDuration?: ChatMessagesProps['loaderMinDuration'];
+};
+
+export type ChatWidget = WidgetFactory<
+  ChatWidgetDescription & { $$widgetType: 'ais.chat' },
+  ChatConnectorParams,
+  ChatWidgetParams
+>;
+
+const defaultTemplates: ChatTemplates = {
+  item(item) {
+    return <Fragment>{JSON.stringify(item, null, 2)}</Fragment>;
+  },
+};
+
+export default (function chat<
+  THit extends RecordWithObjectID = RecordWithObjectID,
+>(widgetParams: ChatWidgetParams<THit> & ChatConnectorParams) {
+  const {
+    container,
+    templates: userTemplates = {},
+    cssClasses = {},
+    resume = false,
+    tools: userTools,
+    getSearchPageURL,
+    disableTriggerValidation = false,
+    showReasoning = true,
+    loaderPosition,
+    shouldShowLoader,
+    loaderShowDelay,
+    loaderMinDuration,
+    ...options
+  } = widgetParams || {};
+
+  if (!container) {
+    throw new Error(withUsage('The `container` option is required.'));
+  }
+
+  const containerNode = getContainerNode(container);
+
+  const templates: ChatTemplates<THit> = {
+    ...defaultTemplates,
+    ...userTemplates,
+  };
+
+  const defaultTools = createDefaultTools(templates, getSearchPageURL);
+
+  const tools = mergeToolOptions(defaultTools, userTools);
+
+  // Inline layouts are always visible, so they don't require a `chatTrigger`
+  // (or AI mode) to be present. We detect this via a `$$inlineLayout` marker
+  // set on the template function returned by `chatInlineLayout()`.
+  const isInlineLayoutTemplate =
+    typeof templates.layout === 'function' &&
+    (templates.layout as { $$inlineLayout?: true }).$$inlineLayout === true;
+
+  const effectiveDisableTriggerValidation =
+    disableTriggerValidation || isInlineLayoutTemplate;
+
+  const specializedRenderer = createRenderer({
+    containerNode,
+    cssClasses,
+    renderState: {},
+    templates,
+    tools,
+    showReasoning,
+    loaderPosition,
+    shouldShowLoader,
+    loaderShowDelay,
+    loaderMinDuration,
+    isInlineLayoutTemplate,
+  });
+
+  const makeWidget = connectChat(specializedRenderer, () =>
+    render(null, containerNode)
+  );
+
+  const widget = makeWidget({
+    resume,
+    tools,
+    disableTriggerValidation: effectiveDisableTriggerValidation,
+    ...options,
+  });
+
+  return {
+    ...widget,
+    $$widgetType: 'ais.chat',
+    // Spreading would copy the getter's value (still `undefined` before `init`),
+    // so we forward to it lazily instead.
+    get chatInstance() {
+      return widget.chatInstance;
+    },
+  };
+} satisfies ChatWidget);
+
+function createLocalState() {
+  const state: unknown[] = [];
+  const subscriptions = new Set<() => void>();
+  let cursor = 0;
+
+  function use<T>(initialValue: T): [T, (value: T) => T] {
+    const index = cursor++;
+    if (state[index] === undefined) {
+      state[index] = initialValue;
+    }
+
+    return [
+      state[index] as T,
+      (value: T) => {
+        const prev = state[index] as T;
+        if (prev === value) {
+          return prev;
+        }
+
+        state[index] = value;
+        subscriptions.forEach((fn) => fn());
+        return value;
+      },
+    ];
+  }
+
+  return {
+    init() {
+      cursor = 0;
+    },
+    subscribe(fn: () => void): () => void {
+      subscriptions.add(fn);
+
+      return () => subscriptions.delete(fn);
+    },
+    use,
+  };
+}

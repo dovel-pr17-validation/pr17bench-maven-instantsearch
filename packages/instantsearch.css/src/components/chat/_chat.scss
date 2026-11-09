@@ -1,0 +1,17 @@
+.ais-Chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.ais-Chat-container {
+  display: flex;
+  flex-direction: column;
+  background-color: rgba(
+    var(--ais-background-color-rgb),
+    var(--ais-background-color-alpha)
+  );
+  border-radius: var(--ais-border-radius-lg);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}

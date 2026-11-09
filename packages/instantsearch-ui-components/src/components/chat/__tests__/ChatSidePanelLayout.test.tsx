@@ -1,0 +1,162 @@
+/**
+ * @jest-environment @instantsearch/testutils/jest-environment-jsdom.ts
+ */
+/** @jsx createElement */
+import { render } from '@testing-library/preact';
+import { createElement, Fragment } from 'preact';
+
+import { createChatSidePanelLayoutComponent } from '../ChatSidePanelLayout';
+
+const ChatSidePanelLayout = createChatSidePanelLayoutComponent({
+  createElement,
+  Fragment,
+});
+
+describe('ChatSidePanelLayout', () => {
+  afterEach(() => {
+    document.body.style.removeProperty('margin-right');
+  });
+
+  const defaultProps = {
+    open: true,
+    maximized: false,
+    headerComponent: <div className="header">Header</div>,
+    messagesComponent: <div className="messages">Messages</div>,
+    promptComponent: <div className="prompt">Prompt</div>,
+    messages: [],
+    status: 'ready' as const,
+    isClearing: false,
+    clearMessages: jest.fn(),
+    onClearTransitionEnd: jest.fn(),
+    tools: {},
+    sendMessage: jest.fn() as any,
+    regenerate: jest.fn() as any,
+    stop: jest.fn() as any,
+    error: undefined,
+  };
+
+  test('renders with default props', () => {
+    const { container } = render(<ChatSidePanelLayout {...defaultProps} />);
+    expect(container).toMatchInlineSnapshot(`
+      <div>
+        <div
+          class="ais-Chat ais-ChatSidePanelLayout"
+        >
+          <div
+            class="ais-Chat-container ais-Chat-container--open"
+          >
+            <div
+              class="header"
+            >
+              Header
+            </div>
+            <div
+              class="messages"
+            >
+              Messages
+            </div>
+            <div
+              class="prompt"
+            >
+              Prompt
+            </div>
+          </div>
+        </div>
+      </div>
+    `);
+  });
+
+  test('renders closed state', () => {
+    const { container } = render(
+      <ChatSidePanelLayout {...defaultProps} open={false} />
+    );
+    expect(container.querySelector('.ais-Chat-container')).not.toHaveClass(
+      'ais-Chat-container--open'
+    );
+  });
+
+  test('makes closed content inactive until reopened', () => {
+    const createElementSpy = jest.fn(createElement);
+    const CompatibleChatSidePanelLayout = createChatSidePanelLayoutComponent({
+      createElement: createElementSpy,
+      Fragment,
+    });
+    const { container, rerender } = render(
+      <CompatibleChatSidePanelLayout
+        {...defaultProps}
+        open={false}
+        promptComponent={<button>Send</button>}
+      />
+    );
+    const chatContainer = container.querySelector('.ais-Chat-container')!;
+
+    expect(chatContainer).toHaveAttribute('inert');
+    expect(chatContainer.querySelector('button')).toBeInTheDocument();
+    expect(
+      createElementSpy.mock.calls.some(
+        ([, props]) => (props as { inert?: unknown } | null)?.inert === 1
+      )
+    ).toBe(true);
+
+    rerender(
+      <CompatibleChatSidePanelLayout
+        {...defaultProps}
+        open={true}
+        promptComponent={<button>Send</button>}
+      />
+    );
+
+    expect(chatContainer).not.toHaveAttribute('inert');
+    expect(chatContainer.querySelector('button')).toBeInTheDocument();
+  });
+
+  test('renders maximized state', () => {
+    const { container } = render(
+      <ChatSidePanelLayout {...defaultProps} maximized={true} />
+    );
+    expect(container.querySelector('.ais-Chat')).toHaveClass(
+      'ais-ChatSidePanelLayout--maximized'
+    );
+    expect(container.querySelector('.ais-Chat-container')).toHaveClass(
+      'ais-Chat-container--maximized'
+    );
+  });
+
+  test('accepts custom classNames', () => {
+    const { container } = render(
+      <ChatSidePanelLayout
+        {...defaultProps}
+        classNames={{ root: 'ROOT', container: 'CONTAINER' }}
+      />
+    );
+    expect(container.querySelector('.ais-Chat')!.className).toBe(
+      'ais-Chat ais-ChatSidePanelLayout ROOT'
+    );
+    expect(container.querySelector('.ais-Chat-container')!.className).toBe(
+      'ais-Chat-container ais-Chat-container--open CONTAINER'
+    );
+  });
+
+  test('renders all slot elements', () => {
+    const { container } = render(<ChatSidePanelLayout {...defaultProps} />);
+    expect(container.querySelector('.header')).toBeInTheDocument();
+    expect(container.querySelector('.messages')).toBeInTheDocument();
+    expect(container.querySelector('.prompt')).toBeInTheDocument();
+  });
+
+  test('sets margin-right on custom parentElement when open', () => {
+    const parent = document.createElement('div');
+    parent.id = 'test-parent';
+    document.body.appendChild(parent);
+    render(
+      <ChatSidePanelLayout
+        {...defaultProps}
+        open={true}
+        parentElement="#test-parent"
+      />
+    );
+    expect(parent.style.marginRight).toBeTruthy();
+    expect(document.body.style.marginRight).toBe('');
+    parent.remove();
+  });
+});

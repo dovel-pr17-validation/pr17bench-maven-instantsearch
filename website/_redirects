@@ -1,0 +1,17 @@
+/           https://www.algolia.com/doc/guides/building-search-ui/what-is-instantsearch/js/
+/examples   https://www.algolia.com/doc/guides/building-search-ui/resources/demos/js/
+/examples/js/ https://www.algolia.com/doc/guides/building-search-ui/resources/demos/
+/examples/react/ https://www.algolia.com/doc/guides/building-search-ui/resources/demos/react
+/examples/hooks/ https://www.algolia.com/doc/guides/building-search-ui/resources/demos/react
+/examples/react-hooks/ https://www.algolia.com/doc/guides/building-search-ui/resources/demos/react
+/examples/vue/ https://www.algolia.com/doc/guides/building-search-ui/resources/demos/vue
+
+/examples/:flavor/:name/search/*   /examples/:flavor/:name/index.html   200
+
+/examples/calendar-widget/*   /examples/js/calendar-widget/:splat   301
+/examples/e-commerce/*   /examples/js/e-commerce/:splat   301
+/examples/media/*   /examples/js/media/:splat   301
+/examples/tourism/*   /examples/js/tourism/:splat   301
+
+/stories/*   /examples/js/showcase/?view=reference   301!
+/stories   /examples/js/showcase/?view=reference   301!

@@ -1,0 +1,65 @@
+{
+  "name": "react-instantsearch-nextjs",
+  "version": "1.4.15",
+  "description": "React InstantSearch SSR utilities for Next.js",
+  "types": "dist/es/index.d.ts",
+  "main": "dist/cjs/index.js",
+  "module": "dist/es/index.js",
+  "type": "module",
+  "exports": {
+    "types": "./dist/es/index.d.ts",
+    "require": "./dist/cjs/index.js",
+    "default": "./dist/es/index.js"
+  },
+  "sideEffects": false,
+  "license": "MIT",
+  "homepage": "https://www.algolia.com/doc/guides/building-search-ui/what-is-instantsearch/react/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/algolia/instantsearch"
+  },
+  "author": {
+    "name": "Algolia, Inc.",
+    "url": "https://www.algolia.com"
+  },
+  "keywords": [
+    "algolia",
+    "ssr",
+    "app",
+    "app router",
+    "fast",
+    "instantsearch",
+    "react",
+    "search",
+    "next",
+    "nextjs"
+  ],
+  "files": [
+    "README.md",
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "BABEL_ENV=es,rollup BUILD_FORMAT=esm rollup -c rollup.config.mjs && BABEL_ENV=rollup BUILD_FORMAT=cjs rollup -c rollup.config.mjs && yarn build:types",
+    "build:types": "tsc -p ./tsconfig.declaration.json --outDir ./dist/es",
+    "test:e2e": "playwright test",
+    "test:e2e:saucelabs": "playwright test",
+    "test:exports": "node ./__tests__/module/is-es-module.mjs && node ./__tests__/module/is-cjs-module.cjs",
+    "watch:es": "rollup -c rollup.config.mjs --watch"
+  },
+  "dependencies": {
+    "@swc/helpers": "0.5.18"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1",
+    "instantsearch.js": "4.122.0",
+    "next": "16.0.7",
+    "react-instantsearch-core": "7.54.0",
+    "start-server-and-test": "1.15.3",
+    "ts-node": "8.4.1"
+  },
+  "peerDependencies": {
+    "next": ">= 13.4 < 17",
+    "react-instantsearch": ">= 7.1.0 < 8"
+  }
+}
